@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Builds and generated output
+build/
+dist/
+output/
+logs/
+*.log
+
+# Frontend / Tauri
+node_modules/
+target/
+src-tauri/target/
+coverage/
+
+# Editors and operating system
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local data and secrets
+*.csv
+*.parquet
+*.xlsx
+*.xls
+*.env
+*.env.*
+!.env.example
