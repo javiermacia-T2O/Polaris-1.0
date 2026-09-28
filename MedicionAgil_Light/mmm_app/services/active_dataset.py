@@ -255,19 +255,41 @@ class ActiveDataset:
         return int(count)
 
     def preview(self, limit: int = 200, offset: int = 0, cancel=None) -> pd.DataFrame:
+        return self.page(limit=limit, offset=offset, cancel=cancel)
+
+    def page(self, limit: int = 200, offset: int = 0, sort=None,
+             cancel=None) -> pd.DataFrame:
+        """Return one bounded page, optionally sorted by known columns."""
         if not 0 <= limit <= 1000 or offset < 0:
             raise ValueError("Preview limitado a 1000 filas por página")
+        sort = tuple(sort or ())
+        selected = self.projection or self.columns
+        for column, ascending in sort:
+            if column not in selected:
+                raise KeyError(column)
+            if not isinstance(ascending, bool):
+                raise ValueError("La dirección de orden debe ser booleana")
         if cancel is not None and cancel.is_set():
             raise TaskCancelled()
         if self.backend == "pandas":
-            return self._frame().iloc[offset:offset + limit]
+            frame = self._frame()
+            if sort:
+                frame = frame.sort_values(
+                    [column for column, _ in sort],
+                    ascending=[ascending for _, ascending in sort],
+                    kind="mergesort")
+            return frame.iloc[offset:offset + limit]
         self._check_source()
-        selected = self.projection or self.columns
         if not selected:
             return pd.DataFrame()
         where, params = self._where()
         sql = (f"SELECT {', '.join(_ident(c) for c in selected)} "
-               f"FROM {self._source_sql()}{where} LIMIT {limit} OFFSET {offset}")
+               f"FROM {self._source_sql()}{where}")
+        if sort:
+            sql += " ORDER BY " + ", ".join(
+                f"{_ident(column)} {'ASC' if ascending else 'DESC'}"
+                for column, ascending in sort)
+        sql += f" LIMIT {limit} OFFSET {offset}"
         started = time.perf_counter()
         result = engine.get_conn().execute(sql, self._params(params)).fetchdf()
         if debug_enabled():
