@@ -1,0 +1,24 @@
+:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #e8eef8; background: #080d17; font-synthesis: none; }
+* { box-sizing: border-box; } body { margin: 0; min-width: 900px; min-height: 100vh; }
+button { font: inherit; } .shell { min-height: 100vh; display: grid; grid-template-columns: 230px 1fr; }
+.sidebar { background: #0d1422; border-right: 1px solid #1c2940; padding: 24px 16px; display: flex; flex-direction: column; }
+.brand { display: flex; gap: 11px; align-items: center; font-weight: 700; margin: 0 8px 30px; }
+.brand > span { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 10px; background: linear-gradient(135deg,#4f8cff,#7557e8); }
+.brand small { display: block; color: #7f8ca4; font-weight: 400; margin-top: 2px; }
+nav { display: grid; gap: 6px; } nav button { border: 0; background: transparent; color: #9ba8bd; text-align: left; padding: 11px 13px; border-radius: 8px; cursor: pointer; }
+nav button:hover, nav button.active { color: #fff; background: #17233a; } .privacy { margin-top: auto; color: #65728a; font-size: 12px; line-height: 1.5; }
+main { padding: 34px 38px 60px; overflow: hidden; } section { max-width: 1500px; margin: auto; }
+.page-header { display: flex; justify-content: space-between; gap: 30px; align-items: flex-end; margin-bottom: 26px; }
+.page-header h1 { font-size: 34px; margin: 2px 0 6px; letter-spacing: -.7px; } .page-header p { margin: 0; color: #8f9cb1; }
+.eyebrow { color: #6d9eff !important; text-transform: uppercase; letter-spacing: 1.6px; font-size: 11px; font-weight: 700; }
+button.primary { border: 0; padding: 11px 18px; border-radius: 8px; color: white; background: #356fe0; cursor: pointer; font-weight: 650; }
+button:disabled { opacity: .55; cursor: default; }.cards { display: grid; grid-template-columns: repeat(4,minmax(150px,1fr)); gap: 12px; margin-bottom: 16px; }
+.cards article,.panel,.analysis-card,.empty { background: #101827; border: 1px solid #1d2a40; border-radius: 12px; }
+.cards article { padding: 16px; } .cards span,.analysis-card > span { color: #74839b; display: block; font-size: 12px; margin-bottom: 8px; }.cards strong { font-size: 17px; }
+.panel { overflow: hidden; }.panel-head { display: flex; justify-content: space-between; align-items: center; padding: 17px 18px; border-bottom: 1px solid #1d2a40; }
+.panel h2,.analysis-card h2 { margin: 0 0 4px; font-size: 17px; }.panel p { margin: 0; color: #718099; font-size: 12px; }.pager { display:flex;align-items:center;gap:10px;font-size:12px;color:#8391a7; }.pager button,.analysis-card button { background:#172238;border:1px solid #263650;color:#c7d1e0;border-radius:6px;padding:7px 10px; }
+.table-wrap { overflow: auto; max-height: calc(100vh - 330px); }table { border-collapse: collapse; width: max-content; min-width: 100%; font-size: 12px; }th { position: sticky; top: 0; background:#121d2f;color:#9db0cb;text-align:left; }th,td { padding: 9px 12px; border-bottom:1px solid #18243a; white-space:nowrap; }tbody tr:hover { background:#121e31; }
+.empty,.loading,.error { padding: 34px; text-align:center; }.empty p,.loading { color:#8491a7; }.error { background:#32171c;color:#ff9ca8;border:1px solid #64303a;border-radius:10px; }
+.analysis-grid { display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px; }.analysis-card { padding:19px; }.analysis-card p { color:#91a0b6;line-height:1.5;min-height:48px; }.analysis-card small { display:block;color:#d4a866;min-height:34px;margin:12px 0; }.analysis-card button { width:100%; }
+.diagnostic { padding:20px;display:flex;gap:14px;align-items:center; }.status { width:12px;height:12px;border-radius:50%;background:#d05757;box-shadow:0 0 14px #d05757; }.status.ok { background:#43b581;box-shadow:0 0 14px #43b581; }
+.diagnostics-data { margin-top:14px; }.diagnostics-data button { background:#172238;border:1px solid #263650;color:#c7d1e0;border-radius:6px;padding:8px 12px; }.diagnostics-data dl { padding:4px 18px 18px;margin:0; }.diagnostics-data dl div { display:grid;grid-template-columns:190px 1fr;padding:10px 0;border-bottom:1px solid #18243a; }.diagnostics-data dt { color:#7f8da3; }.diagnostics-data dd { margin:0;overflow-wrap:anywhere; }
