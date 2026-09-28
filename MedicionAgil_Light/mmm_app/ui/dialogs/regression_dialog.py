@@ -547,7 +547,10 @@ class RegressionDialog(tk.Toplevel):
     def _refresh_global_status(self):
         inputs = [name for name, cfg in self.var_cfg.items()
                   if cfg.get("visible") and name in self.df_full.columns]
-        is_its = self.reg_type_var.get().lower().startswith("evento / its")
+        regression_type = getattr(self, "reg_type_var", None)
+        is_its = bool(
+            regression_type is not None
+            and regression_type.get().lower().startswith("evento / its"))
         n_obs = len(self.df_full)
         txt = f"{len(inputs)} variable(s)  ·  {n_obs:,} observaciones"
         self.lbl_global_status.config(text=txt, fg=COLORS["text"])
@@ -556,7 +559,7 @@ class RegressionDialog(tk.Toplevel):
             errors.append("Selecciona la variable objetivo")
         if not inputs and not is_its:
             errors.append("Marca una variable explicativa")
-        if is_its and not self.events.get("sub_events"):
+        if is_its and not getattr(self, "events", {}).get("sub_events"):
             errors.append("Marca un único evento para ITS")
         if n_obs < 30:
             errors.append("Se necesitan al menos 30 observaciones")
