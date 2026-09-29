@@ -10,6 +10,7 @@ import uuid
 from typing import Callable, Any
 
 from core.tasks import TaskCancelled
+from core.engine import QueryCancellation, cancellation_scope, reset_conn
 
 from .errors import AppError, InternalAppError
 from .schemas import JobState, JobStatus
@@ -22,7 +23,7 @@ def _now() -> str:
 @dataclass
 class _Job:
     status: JobStatus
-    cancel: threading.Event = field(default_factory=threading.Event)
+    cancel: QueryCancellation = field(default_factory=QueryCancellation)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -57,7 +58,9 @@ class JobManager:
                 job.status.state = JobState.RUNNING
                 job.status.started_at = _now()
             try:
-                result_id = work(job.cancel, progress)
+                with cancellation_scope(job.cancel):
+                    result_id = work(job.cancel, progress)
+                    job.cancel.check()
                 with job.lock:
                     if job.cancel.is_set():
                         job.status.state = JobState.CANCELLED
@@ -70,16 +73,21 @@ class JobManager:
                     job.status.state = JobState.CANCELLED
             except AppError as exc:
                 with job.lock:
-                    job.status.state = JobState.FAILED
-                    job.status.error = exc.as_dict()
+                    job.status.state = (JobState.CANCELLED if job.cancel.is_set()
+                                        else JobState.FAILED)
+                    if not job.cancel.is_set():
+                        job.status.error = exc.as_dict()
             except Exception as exc:
                 error = InternalAppError(
                     "La operación falló de forma inesperada.",
                     details={"type": type(exc).__name__, "reason": str(exc)})
                 with job.lock:
-                    job.status.state = JobState.FAILED
-                    job.status.error = error.as_dict()
+                    job.status.state = (JobState.CANCELLED if job.cancel.is_set()
+                                        else JobState.FAILED)
+                    if not job.cancel.is_set():
+                        job.status.error = error.as_dict()
             finally:
+                reset_conn()
                 with job.lock:
                     job.status.finished_at = _now()
 
@@ -110,6 +118,10 @@ class JobManager:
             jobs = list(self._jobs.values())
         for job in jobs:
             job.cancel.set()
+            with job.lock:
+                if job.status.state == JobState.QUEUED:
+                    job.status.state = JobState.CANCELLED
+                    job.status.finished_at = _now()
         self._executor.shutdown(wait=wait, cancel_futures=True)
 
     def _get(self, job_id: str) -> _Job:

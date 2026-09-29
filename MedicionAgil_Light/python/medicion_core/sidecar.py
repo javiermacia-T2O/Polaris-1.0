@@ -12,6 +12,11 @@ import json
 import os
 import sys
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+from core import engine
+from core.tasks import TaskCancelled
 from typing import Any, Callable
 
 from pydantic import BaseModel
@@ -132,26 +137,204 @@ class SidecarServer:
         else:
             incoming = input_stream or sys.stdin
             outgoing = output_stream or sys.stdout
+        write_lock = threading.Lock()
+        active = {}
+        active_lock = threading.Lock()
+        # Independent bounded lanes reserve room for interactive requests even
+        # when exports saturate the heavy queue. Mutations stay serialized.
+        capacities = {"interactive": threading.BoundedSemaphore(24),
+                      "heavy": threading.BoundedSemaphore(8)}
+        executors = {lane: ThreadPoolExecutor(max_workers=1,
+                     thread_name_prefix=f"ipc-{lane}") for lane in capacities}
+
+        def error(request_id, code, message, details=None):
+            return {"id": request_id, "ok": False, "error": {
+                "code": code, "message": message, "details": details or {}}}
+
+        def cancelled(request_id):
+            return error(request_id, "cancelled", "Solicitud cancelada.")
+
+        def send(response):
+            try:
+                encoded = json.dumps(response, ensure_ascii=False, allow_nan=False)
+            except (TypeError, ValueError, OverflowError) as exc:
+                encoded = json.dumps(error(response.get("id"), "internal_error",
+                                           "No se pudo serializar la respuesta.",
+                                           {"type": type(exc).__name__}))
+            with write_lock:
+                outgoing.write(encoded + "\n")
+                outgoing.flush()
+
+        def execute(request, marker, queued_at, lane):
+            request_id = request["id"]
+            execution_at = time.perf_counter()
+            status = "error"
+            try:
+                with engine.cancellation_scope(marker):
+                    response = self.handle(request)
+                    marker.check()
+                status = "ok" if response["ok"] else "error"
+                return response
+            except Exception as exc:
+                if marker.is_set() or isinstance(exc, TaskCancelled):
+                    status = "cancelled"
+                    return cancelled(request_id)
+                event("error", "sidecar", "request_failed", request_id=request_id,
+                      error_type=type(exc).__name__)
+                return error(request_id, "internal_error", "La operación falló.",
+                             {"type": type(exc).__name__})
+            finally:
+                event("info", "sidecar", "request_finished", request_id=request_id,
+                      request_operation=request.get("operation"), priority=lane,
+                      queue_ms=round((execution_at - queued_at) * 1000, 2),
+                      execution_ms=round((time.perf_counter() - execution_at) * 1000, 2),
+                      total_ms=round((time.perf_counter() - queued_at) * 1000, 2),
+                      status=status, cancel_requested=marker.is_set())
+
+        def completed(future, request_id, key, marker, lane):
+            try:
+                marker.finish()
+                response = cancelled(request_id) if future.cancelled() else future.result()
+            except Exception as exc:
+                # Telemetry or another failure outside execute's try block
+                # must still settle the caller. Do not log from this fallback.
+                response = error(request_id, "internal_error", "La operación falló.",
+                                 {"type": type(exc).__name__})
+            finally:
+                with active_lock:
+                    active.pop(key, None)
+                capacities[lane].release()
+            send(response)
+
         try:
             for line in incoming:
                 if not line.strip():
                     continue
                 try:
                     request = json.loads(line)
-                    response = self.handle(request)
                 except json.JSONDecodeError as exc:
-                    response = {
-                        "id": None, "ok": False,
-                        "error": SidecarError(
-                            "JSON inválido.",
-                            details={"reason": str(exc)}).as_dict(),
-                    }
-                outgoing.write(json.dumps(response, ensure_ascii=False,
-                                          allow_nan=False) + "\n")
-                outgoing.flush()
+                    send(error(None, "sidecar_error", "JSON inválido.",
+                               {"reason": str(exc)}))
+                    continue
+                if not isinstance(request, dict):
+                    send(error(None, "sidecar_error", "La solicitud debe ser un objeto."))
+                    continue
+                request_id = request.get("id")
+                if (not isinstance(request_id, (str, int)) or
+                        isinstance(request_id, bool) or request_id == ""):
+                    send(error(None, "sidecar_error", "ID de solicitud inválido."))
+                    continue
+                if request.get("token") != self.token:
+                    send(error(request_id, "sidecar_error", "Sesión no autorizada."))
+                    continue
+                operation = request.get("operation")
+                if operation is not None and not isinstance(operation, str):
+                    send(error(request_id, "sidecar_error", "Operación inválida."))
+                    continue
+                if request.get("type") == "cancel":
+                    with active_lock:
+                        target = active.get(str(request.get("target_id")))
+                    interruptible = False
+                    if target is not None:
+                        marker, future = target
+                        interruptible = marker.cancel()
+                        future.cancel()
+                    send({"id": request_id, "ok": True, "result": {
+                        "cancel_requested": target is not None,
+                        "running_work_interruptible": interruptible,
+                        "fallback": "cooperative_or_wait_for_completion",
+                        "rollback_guaranteed": False}})
+                    continue
+                if request.get("type", "request") != "request":
+                    send(error(request_id, "sidecar_error", "Tipo de mensaje inválido."))
+                    continue
+                if not isinstance(request.get("params", {}), dict):
+                    send(error(request_id, "sidecar_error", "params debe ser un objeto."))
+                    continue
+                if request.get("priority") not in (None, "control", "interactive", "heavy"):
+                    send(error(request_id, "sidecar_error", "Prioridad inválida."))
+                    continue
+                if operation in {"health", "cancel_job", "get_job_status"}:
+                    try:
+                        send(self.handle(request))
+                    except Exception as exc:
+                        send(error(request_id, "internal_error", "La operación falló.",
+                                   {"type": type(exc).__name__}))
+                    continue
+                if operation == "shutdown":
+                    with active_lock:
+                        pending = list(active.values())
+                    for marker, future in pending:
+                        marker.cancel()
+                        future.cancel()
+                    send({"id": request_id, "ok": True, "result": {"shutting_down": True}})
+                    break
+                key = str(request_id)
+                with active_lock:
+                    duplicate = key in active
+                if duplicate:
+                    send(error(request_id, "duplicate_id", "ID de solicitud ya activo."))
+                    continue
+                lane = _request_lane(operation, request.get("priority"))
+                if not capacities[lane].acquire(blocking=False):
+                    send(error(request_id, "busy", "Cola de trabajo llena.", {"priority": lane}))
+                    continue
+                marker = engine.QueryCancellation()
+                try:
+                    future = executors[lane].submit(execute, request, marker,
+                                                    time.perf_counter(), lane)
+                except RuntimeError as exc:
+                    marker.finish()
+                    capacities[lane].release()
+                    send(error(request_id, "internal_error", "Worker no disponible.",
+                               {"type": type(exc).__name__}))
+                    continue
+                with active_lock:
+                    active[key] = (marker, future)
+                future.add_done_callback(lambda done, rid=request_id, key=key,
+                                         marker=marker, lane=lane:
+                                         completed(done, rid, key, marker, lane))
         finally:
-            self.application.shutdown()
+            # EOF drains accepted work. Explicit shutdown above first cancels
+            # work. Closing each worker's own connection avoids native leaks.
+            try:
+                for executor in executors.values():
+                    try:
+                        executor.submit(engine.reset_conn)
+                    except RuntimeError:
+                        # A broken/stopped pool cannot accept finalizers;
+                        # still join every pool and shut down the app below.
+                        pass
+            finally:
+                try:
+                    for executor in executors.values():
+                        executor.shutdown(wait=True)
+                finally:
+                    self.application.shutdown()
         return 0
+
+
+_INTERACTIVE = frozenset({
+    "list_datasets", "get_dataset_metadata", "get_columns", "get_column_profile",
+    "get_column_values", "get_date_columns", "get_date_range", "get_table_preview",
+    "get_table_page", "preview_table", "list_analyses", "get_analysis_manifest",
+    "get_analysis_result", "get_result_chart", "get_result_table", "get_cache_info",
+})
+_MUTATIONS = frozenset({
+    "load_dataset", "close_dataset", "apply_filters", "reset_filters",
+    "apply_date_range", "reset_date_range", "build_table", "run_analysis",
+    "export_result", "export_dataset", "merge_datasets", "clear_cache", "free_memory",
+})
+
+
+def _request_lane(operation, priority):
+    # A caller cannot move a mutation out of the serialized heavy lane or
+    # promote expensive work onto the stdin/control thread.
+    if operation in _MUTATIONS:
+        return "heavy"
+    if priority in {"interactive", "heavy"}:
+        return priority
+    return "interactive" if operation in _INTERACTIVE else "heavy"
 
 
 def _redirect_engine_output() -> None:

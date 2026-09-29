@@ -174,17 +174,18 @@ class MedicionApplication:
 
     def get_dataset_metadata(self, dataset_id: str) -> DatasetMetadata:
         entry = self._dataset(dataset_id)
+        active = entry.active
         try:
             rows, approximate = self._row_count_or_defer(dataset_id,
-                                                         entry.active)
+                                                         active)
         except MemoryError as exc:
             raise MemoryBudgetError(str(exc)) from exc
-        status = entry.active.resource_status()
-        columns = list(entry.active.projection or entry.active.columns)
-        type_map = dict(zip(entry.active.columns, entry.active.types))
+        status = active.resource_status()
+        columns = list(active.projection or active.columns)
+        type_map = dict(zip(active.columns, active.types))
         return DatasetMetadata(
             dataset_id=dataset_id, name=entry.name,
-            backend=entry.active.backend, rows=rows, columns=columns,
+            backend=active.backend, rows=rows, columns=columns,
             types=[type_map.get(column, "") for column in columns],
             uses_disk=bool(status["uses_disk"]),
             source_path=str(entry.source_path) if entry.source_path else None,
@@ -197,17 +198,19 @@ class MedicionApplication:
         reads the schema directly instead of routing through metadata.
         """
         entry = self._dataset(dataset_id)
-        columns = list(entry.active.projection or entry.active.columns)
-        type_map = dict(zip(entry.active.columns, entry.active.types))
+        active = entry.active
+        columns = list(active.projection or active.columns)
+        type_map = dict(zip(active.columns, active.types))
         return [{"name": name, "type": type_map.get(name, "")}
                 for name in columns]
 
     def get_column_profile(self, dataset_id: str, column: str) -> dict[str, Any]:
         entry = self._dataset(dataset_id)
-        if column not in entry.active.columns:
+        active = entry.active
+        if column not in active.columns:
             raise UserInputError("Columna no encontrada.",
                                  details={"column": column})
-        sample = entry.active.with_columns([column]).preview(limit=1000)
+        sample = active.with_columns([column]).preview(limit=1000)
         series = sample[column]
         return {
             "column": column,
@@ -227,11 +230,12 @@ class MedicionApplication:
         ``truncated`` tells the frontend to fall back to a free-text filter.
         """
         entry = self._dataset(dataset_id)
-        if column not in entry.active.columns:
+        active = entry.active
+        if column not in active.columns:
             raise UserInputError("Columna no encontrada.",
                                  details={"column": column})
         try:
-            values = entry.active.distinct_values(column, limit=limit)
+            values = active.distinct_values(column, limit=limit)
         except MemoryError as exc:
             raise MemoryBudgetError(str(exc)) from exc
         if values is None:
@@ -300,8 +304,9 @@ class MedicionApplication:
         from core.loader import detect_granularity, get_date_columns
 
         entry = self._dataset(dataset_id)
+        active = entry.active
         try:
-            frame = entry.active.preview(limit=1000)
+            frame = active.preview(limit=1000)
         except MemoryError as exc:
             raise MemoryBudgetError(str(exc)) from exc
         result = []
@@ -315,11 +320,12 @@ class MedicionApplication:
         from core.loader import detect_granularity
 
         entry = self._dataset(dataset_id)
-        if column not in entry.active.columns:
+        active = entry.active
+        if column not in active.columns:
             raise UserInputError("Columna de fecha no encontrada.",
                                  details={"column": column})
         try:
-            minimum, maximum = entry.active.date_range(column)
+            minimum, maximum = active.date_range(column)
         except MemoryError as exc:
             raise MemoryBudgetError(str(exc)) from exc
         except (KeyError, ValueError) as exc:
@@ -328,7 +334,7 @@ class MedicionApplication:
         granularity = "Original"
         try:
             granularity = detect_granularity(
-                entry.active.preview(limit=1000), column)
+                active.preview(limit=1000), column)
         except Exception:
             pass
         return {
@@ -372,17 +378,18 @@ class MedicionApplication:
         if limit < 1 or limit > 1000 or offset < 0:
             raise UserInputError("La página debe contener entre 1 y 1000 filas.")
         entry = self._dataset(dataset_id)
+        active = entry.active
         sorts = [item if isinstance(item, SortSpec)
                  else SortSpec.model_validate(item) for item in (sort or [])]
         try:
-            frame = entry.active.page(
+            frame = active.page(
                 limit=limit, offset=offset,
                 sort=[(item.column, item.direction == "asc") for item in sorts])
         except KeyError as exc:
             raise UserInputError("Columna de orden no encontrada.",
                                  details={"column": str(exc)}) from exc
         total_rows, approximate = self._row_count_or_defer(dataset_id,
-                                                           entry.active)
+                                                           active)
         return TablePage(
             dataset_id=dataset_id, offset=offset, limit=limit,
             total_rows=total_rows,
@@ -403,6 +410,7 @@ class MedicionApplication:
                                             preview_to_pandas)
 
         entry = self._dataset(dataset_id)
+        active = entry.active
         try:
             table_recipe = TableRecipe.from_parts(
                 rows=recipe.get("rows", ()), cols=recipe.get("columns", ()),
@@ -412,17 +420,17 @@ class MedicionApplication:
                 selected=recipe.get("selected", ()),
                 order=recipe.get("order", ()),
                 col_types=recipe.get("column_types"))
-            if entry.active.backend == "pandas":
+            if active.backend == "pandas":
                 # The preview must never materialize the whole frame: register
                 # the resident DataFrame and compile the same bounded recipe so
                 # the construction is shown progressively, dimension by
                 # dimension, exactly like the lazy backends.
                 frame = build_table_preview_pandas(
-                    entry.active._frame(), table_recipe.rows,
+                    active._frame(), table_recipe.rows,
                     table_recipe.columns, table_recipe.values,
                     dict(table_recipe.filters), recipe=table_recipe)
             else:
-                frame = preview_to_pandas(entry.active, table_recipe)
+                frame = preview_to_pandas(active, table_recipe)
             approximate = bool(frame.attrs.get("approximate", False))
             frame = frame.head(max(1, min(int(limit), 200)))
             return TablePage(
@@ -716,7 +724,9 @@ class MedicionApplication:
         if not isinstance(value, pd.DataFrame):
             raise UserInputError("Tabla de resultado no encontrada.")
         try:
-            exported = export_dataframe(value, Path(path), fmt)
+            from core.engine import current_cancellation
+            exported = export_dataframe(value, Path(path), fmt,
+                                        cancel=current_cancellation())
             return str(exported or path)
         except (OSError, ValueError) as exc:
             raise ExportError("No se pudo exportar el resultado.",
@@ -727,7 +737,9 @@ class MedicionApplication:
         """Export the active (filtered) dataset without loading it fully."""
         entry = self._dataset(dataset_id)
         try:
-            exported = entry.active.export(Path(path), fmt)
+            from core.engine import current_cancellation
+            exported = entry.active.export(Path(path), fmt,
+                                           cancel=current_cancellation())
             return str(exported or path)
         except (OSError, ValueError) as exc:
             raise ExportError("No se pudo exportar el dataset.",
