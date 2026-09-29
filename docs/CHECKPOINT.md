@@ -1,62 +1,15 @@
 # CHECKPOINT.md
 
-Estado exacto del proyecto al finalizar la última sesión y punto exacto desde
-el que continuar. Actualizar obligatoriamente antes de terminar cada sesión.
+## 2026-09-29 — fase 1 IPC, implementación lista para revisión
 
-## Última sesión
+Trabajo local en la rama `codex/phase1-ipc-wip`, desde `ee94e6f`. Commits de esta actualización: `33a626c` (base IPC y gaps), `5b8248a` (cancelación frontend), `0527a81` (plazos/correlación/lifecycle Rust), `5a7639f` (carriles y cancelación DuckDB), `f4baf83` (workflow CI) y `a54fe48` (ventana de IDs cancelados tempranos). No se ha hecho push.
 
-- **Fecha**: 2026-09-28
-- **Estado**: paridad React/Tauri ampliada. Se migraron tres capacidades del
-  menú Tkinter al frontend React sobre el sidecar Python: unir datasets,
-  mantenimiento (caché/memoria) y selección de periodo (fecha/granularidad).
-  E2E del sidecar, `tsc -b`, `vite build` y Vitest pasan. Falta validación
-  interactiva con `tauri dev` y build portable.
+La implementación incluye lector multiplexado y escritor independiente en Rust, correlación de IDs ante respuestas tardías, colas limitadas CONTROL/INTERACTIVE/HEAVY, timeouts por operación, cancelación cooperativa/SQL y propagación de `AbortSignal` en consultas frontend. La cancelación DuckDB se verifica sobre una consulta real larga y se comprueba que una consulta siguiente funciona en el worker. Ver arquitectura, evidencia y límites en `docs/IPC_PHASE1.md`.
 
-## Estado exacto
+Verificaciones comunicadas por los agentes: `uv run --frozen --group dev pytest -q`: **255 passed, 6 skipped**; `npm run build` correcto y Vitest: **6 passed**. Repetí el conjunto IPC/cancelación en esta sesión: **6 passed**. Se añadieron **9 pruebas Rust activas** y un fixture de subproceso ignorado por defecto, pero no hay Cargo en el entorno; el workflow Windows aún no se ha lanzado porque los commits no se han publicado. Tampoco se ejecutó `tauri dev` ni se reconstruyó el portable.
 
-- **Rama/git**: no se detectó repositorio Git en la raíz ni en
-  `MedicionAgil_Light`.
-- **Cambios de esta sesión**:
-  - `python/medicion_core/application.py`: nuevos métodos `merge_datasets`,
-    `get_cache_info`, `clear_cache`, `free_memory`, `get_date_columns`,
-    `get_date_range`, `apply_date_range`, `reset_date_range`.
-  - `python/medicion_core/sidecar.py`: registro de las ocho operaciones.
-  - `src/shared/api.ts`: `mergeDatasets`, `cacheInfo`, `clearCache`,
-    `freeMemory`, `dateColumns`, `dateRange`, `applyDateRange`,
-    `resetDateRange`.
-  - `src/features/datasets/MergePanel.tsx` y `DateRangePanel.tsx` (nuevos);
-    `DatasetsScreen.tsx` los integra.
-  - `src/features/diagnostics/DiagnosticsScreen.tsx`: panel de mantenimiento.
-  - `scripts/e2e_sidecar.py`: pasos de export, merge, caché, memoria y fechas.
-- **Cambios anteriores relevantes**: `mmm_app/analyses/regression.py` calcula
-  hasta cinco folds expanding con `TimeSeriesSplit` para el modelo elegido. Cada
-  fold ajusta el modelo (y el escalador cuando aplica) sólo con su
-  entrenamiento, reporta RMSE/MAE/WAPE/sesgo/R² y
-  compara con el promedio de su propio prefijo. Conserva el holdout final y
-  usa sus métricas para calidad sólo cuando rolling no está disponible. El
-  selector de `regression_dialog.py` ahora incluye Evento/ITS.
-- **Pruebas**: E2E del sidecar pasa completo (`merge_datasets: e2e-unido 832
-  filas`, `get_date_range: 2023-01-02 -> 2024-12-23 D`, `apply_date_range: 416
-  filas`, `E2E OK`). `tsc -b` y `vite build` pasan; Vitest pasa (1 archivo).
-  El sidecar se reconstruyó con PyInstaller y se desplegó en
-  `src-tauri/target/debug/sidecar/`.
-- **Entorno**: Python 3.12.14 en `.venv`; Node v24.21.0; Rust 1.98.1.
-- **Portable**: no se reconstruyó ni sincronizó en esta sesión. Requiere
-  entorno de build y prueba funcional.
+Límites operativos: un reinicio del sidecar pierde handles de dataset y job; cancelación nativa/pandas fuera de DuckDB puede esperar a fin de operación; `stop` mata/recolecta el proceso hijo directo y no se ha validado el cierre de procesos descendientes.
 
-## Continuar desde
+Siguiente paso: esperar/revisar workflow Rust Windows; corregir si falla; luego validar el flujo Tauri real y el sidecar empaquetado. Mantener la fase 2 bloqueada hasta esos criterios.
 
-1. Conseguir un entorno Python 3.12 completo del proyecto con pytest,
-   Matplotlib, scikit-learn y statsmodels (pandas y NumPy disponibles);
-   ejecutar la suite dirigida y la suite general, incluyendo ITS/HAC y
-   rolling CV real.
-2. Corregir fallos de esas pruebas y validar el modo ITS desde la UI.
-3. Continuar `PLAN.md`: tuning temporal y SHAP en Regresión; controles
-   contaminados/placebos/sensibilidad en Causal Impact;
-   POST-test y guardar/recargar `Design` en GeoX.
-4. Validar GeoX con el CSV Jamaica y reconstruir/probar la distribución
-   portable.
-
-Los informes técnicos están indexados en `docs/README.md` y
-`docs/ANALISIS/README.md`. La fuente de verdad sobre comportamiento sigue
-siendo el código ejecutable.
+Tras `72912be` se repitió pytest completo: **255 passed, 6 skipped**. Los callbacks IPC también resuelven errores de telemetría/serialización y liberan capacidad.
