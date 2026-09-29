@@ -7,6 +7,23 @@ DESCRIPTION = "Correlación de Pearson entre variables numéricas"
 CATEGORY = "Básicos"
 
 
+def get_table_format() -> dict:
+    """Estructura de tabla requerida por el análisis."""
+    return {
+        "summary": "≥ 2 métricas numéricas",
+        "temporal": [],
+        "required_dimensions": [],
+        "optional_dimensions": [],
+        "metrics": ["(≥ 2 columnas numéricas)"],
+        "investment": [],
+        "rows": [],
+        "columns": [],
+        "values": ["(≥ 2 métricas numéricas)"],
+        "requires_pivot": False,
+        "notes": "Necesita al menos dos columnas numéricas con varianza.",
+    }
+
+
 def run(df: pd.DataFrame, **kwargs) -> dict:
     num = df.select_dtypes("number")
     if num.shape[1] < 2:

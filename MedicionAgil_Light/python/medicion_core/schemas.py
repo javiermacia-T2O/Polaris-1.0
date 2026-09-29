@@ -21,6 +21,10 @@ class DatasetMetadata(ApiModel):
     types: list[str]
     uses_disk: bool
     source_path: str | None = None
+    # True while ``rows`` is a provisional value: a full COUNT(*) over a
+    # multi-gigabyte source is computed in the background and the UI polls
+    # until the exact total arrives.
+    rows_approximate: bool = False
 
 
 class FilterSpec(ApiModel):
@@ -40,6 +44,10 @@ class TablePage(ApiModel):
     total_rows: int
     columns: list[str]
     rows: list[dict[str, Any]]
+    approximate: bool = False
+    # True while ``total_rows`` is provisional (a huge source is still being
+    # counted in the background); the UI polls until the exact total arrives.
+    total_rows_approximate: bool = False
 
 
 class AnalysisManifest(ApiModel):
@@ -55,6 +63,28 @@ class AnalysisManifest(ApiModel):
     supports_lazy_dataset: bool = False
     recommended_for: str | None = None
     caution: str | None = None
+    table_format: "TableFormat | None" = None
+
+
+class TableFormat(ApiModel):
+    """Estructura de tabla que un análisis necesita para ejecutarse.
+
+    Cada análisis declara aquí las variables que requiere (temporal,
+    dimensiones obligatorias/opcionales, métricas/KPIs e inversión) y los
+    roles del constructor (Fila/Columna/Valor) que debe cumplir la tabla.
+    """
+
+    summary: str
+    temporal: list[str] = []
+    required_dimensions: list[str] = []
+    optional_dimensions: list[str] = []
+    metrics: list[str] = []
+    investment: list[str] = []
+    rows: list[str] = []
+    columns: list[str] = []
+    values: list[str] = []
+    requires_pivot: bool = False
+    notes: str | None = None
 
 
 class JobState(StrEnum):

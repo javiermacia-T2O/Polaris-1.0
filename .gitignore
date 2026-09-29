@@ -39,3 +39,6 @@ Thumbs.db
 *.env
 *.env.*
 !.env.example
+
+# Local datasets (never commit user data)
+data test/

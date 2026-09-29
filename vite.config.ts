@@ -4,7 +4,29 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
-  server: { port: 1420, strictPort: true },
+  server: {
+    port: 1420,
+    strictPort: true,
+    watch: {
+      ignored: [
+        "**/src-tauri/target/**",
+        "**/MedicionAgil_Light/build/**",
+        "**/MedicionAgil_Light/dist/**",
+        "**/MedicionAgil_Light/mmm_app/output/**",
+        "**/MedicionAgil_Light/mmm_app/logs/**",
+        // Datasets and exports are user data, not source. Watching them
+        // crashes the dev server with EBUSY when a file is locked by the
+        // scientific engine (e.g. an open CSV/Parquet).
+        "**/data test/**",
+        "**/data/**",
+        "**/*.csv",
+        "**/*.tsv",
+        "**/*.parquet",
+        "**/*.xlsx",
+        "**/*.xls",
+      ],
+    },
+  },
   envPrefix: ["VITE_", "TAURI_ENV_"],
   build: { target: "chrome105", sourcemap: true },
   test: {

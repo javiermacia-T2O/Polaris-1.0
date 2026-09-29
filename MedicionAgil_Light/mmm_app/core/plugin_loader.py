@@ -85,6 +85,27 @@ def _read_metadata(file: Path) -> dict | None:
     return metadata if has_run else None
 
 
+def read_table_format(analysis: dict) -> dict | None:
+    """Extrae ``get_table_format`` sin importar el módulo (evita cargar jax/geox)."""
+    file = Path(analysis.get("path") or ANALYSES_DIR / analysis["file"])
+    try:
+        tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
+    except (OSError, SyntaxError, UnicodeError):
+        return None
+
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or node.name != "get_table_format":
+            continue
+        for stmt in node.body:
+            if isinstance(stmt, ast.Return) and stmt.value is not None:
+                try:
+                    value = ast.literal_eval(stmt.value)
+                except (ValueError, TypeError):
+                    return None
+                return value if isinstance(value, dict) else None
+    return None
+
+
 def load_analysis(analysis: dict) -> ModuleType:
     """Carga una entrada del catálogo una sola vez, al usarla."""
     cached = analysis.get("module")

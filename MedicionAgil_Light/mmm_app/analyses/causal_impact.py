@@ -54,6 +54,23 @@ CATEGORY = "MMM"
 
 CUSTOM_DIALOG = "CausalImpactDialog"
 
+
+def get_table_format() -> dict:
+    """Estructura de tabla requerida por el análisis."""
+    return {
+        "summary": "Fecha | KPI | (controles)",
+        "temporal": ["Fecha"],
+        "required_dimensions": [],
+        "optional_dimensions": ["Canal", "Soporte"],
+        "metrics": ["KPI", "Controles"],
+        "investment": [],
+        "rows": ["Fecha"],
+        "columns": [],
+        "values": ["KPI", "Controles"],
+        "requires_pivot": False,
+        "notes": "Serie temporal con el KPI objetivo y las series de control.",
+    }
+
 # ==================================================================
 # SEPARADOR ÚNICO para combos (no puede aparecer en nombres de series)
 # ==================================================================

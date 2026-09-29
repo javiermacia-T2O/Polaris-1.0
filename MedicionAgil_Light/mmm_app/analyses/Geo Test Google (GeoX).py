@@ -17,6 +17,23 @@ CATEGORY = "MMM"
 CUSTOM_DIALOG = "GeoXDialog"
 
 
+def get_table_format() -> dict:
+    """Estructura de tabla requerida por el análisis."""
+    return {
+        "summary": "Fecha | Región | KPI | (Mercado)",
+        "temporal": ["Fecha"],
+        "required_dimensions": ["Región"],
+        "optional_dimensions": ["Mercado"],
+        "metrics": ["KPI"],
+        "investment": [],
+        "rows": ["Fecha", "Región"],
+        "columns": [],
+        "values": ["KPI"],
+        "requires_pivot": False,
+        "notes": "Serie temporal por región con el KPI a analizar.",
+    }
+
+
 # ------------------------------------------------------------------
 # CLAVES
 # ------------------------------------------------------------------

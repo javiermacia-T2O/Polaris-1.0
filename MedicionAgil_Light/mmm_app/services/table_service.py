@@ -123,7 +123,16 @@ def _recipe_source(dataset: ActiveDataset, recipe: TableRecipe):
     return filtered, selected, source, where, filtered._params(params)
 
 
-def _pivot_categories(dataset, recipe, column, source, where, params,
+def _pivot_key_expression(columns) -> str:
+    """Combine one or more pivot columns into a single deterministic key."""
+    parts = []
+    for column in columns:
+        quoted = f'"{_sql_ident(column)}"'
+        parts.append(f"COALESCE(CAST({quoted} AS VARCHAR), '(vacío)')")
+    return " || ' | ' || ".join(parts)
+
+
+def _pivot_categories(dataset, recipe, columns, source, where, params,
                       *, sample_rows: int | None = None):
     """Return pivot headings, optionally from the same bounded preview source.
 
@@ -131,19 +140,23 @@ def _pivot_categories(dataset, recipe, column, source, where, params,
     category headings.  The full table still uses every filtered row; the
     preview uses a bounded, explicitly approximate sample when necessary.
     """
-    key = hashlib.sha256(repr(("pivot", dataset.version_token(), column,
+    columns = tuple(columns)
+    key = hashlib.sha256(repr(("pivot", dataset.version_token(), columns,
                               recipe.column_types, sample_rows))
                          .encode("utf-8")).hexdigest()
     def load():
-        quoted = f'"{_sql_ident(column)}"'
+        expression = _pivot_key_expression(columns)
         category_source = f"{source}{where}"
         if sample_rows is not None:
+            # The bounded sample already projects the combined key, so the
+            # outer query must read that alias instead of the raw columns.
             category_source = (
-                f"(SELECT {quoted} FROM {category_source} "
+                f"(SELECT {expression} AS _pivot_key FROM {category_source} "
                 f"LIMIT {sample_rows}) AS _pivot_sample")
+            expression = "_pivot_key"
         rows = db_engine.get_conn().execute(
-            f'SELECT DISTINCT {quoted} FROM {category_source} '
-            f'ORDER BY {quoted} LIMIT 51', params).fetchall()
+            f'SELECT DISTINCT {expression} FROM {category_source} '
+            f'ORDER BY 1 LIMIT 51', params).fetchall()
         if len(rows) > 50:
             raise MemoryError("Pivot con más de 50 columnas; filtra sus valores")
         return tuple(row[0] for row in rows)
@@ -198,10 +211,12 @@ def compile_table(dataset: ActiveDataset, recipe: TableRecipe,
         approximate = more is not None
         source_sql += f" LIMIT {_PREVIEW_SOURCE_LIMIT}"
     base = f"({source_sql}) AS _filtered"
+    # A single trailing LIMIT is appended for previews.  Some branches already
+    # need their own LIMIT (a heading-only preview keeps one synthetic row), so
+    # track it here to avoid emitting an invalid double LIMIT clause.
+    limit_applied = False
     if blank_column_preview:
-        if len(recipe.columns) != 1:
-            raise ValueError("La vista de columnas vacías admite una columna")
-        categories = _pivot_categories(filtered, recipe, recipe.columns[0],
+        categories = _pivot_categories(filtered, recipe, recipe.columns,
                                        source, where, params,
                                        sample_rows=(_PREVIEW_SOURCE_LIMIT
                                                     if bounded_preview else None))
@@ -215,20 +230,26 @@ def compile_table(dataset: ActiveDataset, recipe: TableRecipe,
         # With no row identifier, retain a single empty row so the preview can
         # render the selected column headings.  Otherwise every row identifier
         # is shown once and the category cells intentionally remain null.
-        sql = (f"SELECT DISTINCT {select_sql} FROM {base}" if groups else
-               f"SELECT {select_sql} FROM {base} LIMIT 1")
+        if groups:
+            sql = f"SELECT DISTINCT {select_sql} FROM {base}"
+        else:
+            sql = f"SELECT {select_sql} FROM {base} LIMIT 1"
+            limit_applied = True
     elif not has_aggregate:
-        projected = recipe.selected or tuple(selected) or filtered.columns
+        # Without a metric the table is a dimension listing.  Selecting a
+        # variable as Fila/Columna must project only the assigned dimensions,
+        # never the whole dataset.
+        projected = list(dict.fromkeys([
+            *recipe.rows, *recipe.columns])) or list(
+                recipe.selected or tuple(selected) or filtered.columns)
         expressions = ", ".join(f'"{_sql_ident(c)}"' for c in projected)
         sql = f"SELECT {expressions} FROM {base}"
     else:
         pivot = has_pivoted_value and bool(recipe.columns)
-        if pivot and len(recipe.columns) != 1:
-            raise ValueError("Pivot lazy admite una columna de pivote")
         groups = list(dict.fromkeys(
             recipe.rows if pivot else [*recipe.rows, *recipe.columns]))
         values = []
-        categories = (_pivot_categories(filtered, recipe, recipe.columns[0],
+        categories = (_pivot_categories(filtered, recipe, recipe.columns,
                                        source, where, params,
                                        sample_rows=(_PREVIEW_SOURCE_LIMIT
                                                     if bounded_preview else None))
@@ -255,10 +276,9 @@ def compile_table(dataset: ActiveDataset, recipe: TableRecipe,
                     "Usa 'count' para valores textuales o marca la columna "
                     "como número si su contenido es convertible.")
             if pivot and metric_pivoted:
-                pivot_col = f'"{_sql_ident(recipe.columns[0])}"'
+                pivot_key = _pivot_key_expression(recipe.columns)
                 for category in categories:
-                    condition = (f"{pivot_col} IS NULL" if category is None
-                                 else f"{pivot_col} = '{_sql_escape(category)}'")
+                    condition = (f"{pivot_key} = '{_sql_escape(category)}'")
                     term = f"CASE WHEN {condition} THEN {metric} END"
                     expression = _pivot_aggregate_expression(term, aggregation)
                     label = (_category_label(category)
@@ -308,7 +328,8 @@ def compile_table(dataset: ActiveDataset, recipe: TableRecipe,
         sql += " ORDER BY " + ", ".join(
             f'"{_sql_ident(column)}"' for column in groups)
     if preview:
-        sql += " LIMIT 20"
+        if not limit_applied:
+            sql += " LIMIT 20"
     return sql, tuple(params), approximate
 
 

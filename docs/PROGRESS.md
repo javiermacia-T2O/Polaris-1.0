@@ -5,6 +5,22 @@ sesión. No borrar entradas: lo completado queda como historial.
 
 ## Tareas completadas
 
+- Paridad React/Tauri: se completó la migración de tres capacidades del menú
+  Tkinter al frontend React con contratos tipados sobre el sidecar Python.
+  - **Unir datasets** (`merge_datasets`): concat (todas/comunes) y merge
+    (inner/outer) con claves; nuevo `MergePanel.tsx` en la pantalla Datos.
+  - **Mantenimiento** (`get_cache_info`, `clear_cache`, `free_memory`): tamaño
+    de caché Parquet, limpieza protegiendo fuentes activas y liberación de
+    memoria ligera/completa (reset DuckDB); acciones en `DiagnosticsScreen.tsx`.
+  - **Periodo** (`get_date_columns`, `get_date_range`, `apply_date_range`,
+    `reset_date_range`): detección de columnas de fecha, granularidad inferida
+    y filtrado por rango; nuevo `DateRangePanel.tsx` en la pantalla Datos.
+- Se amplió `scripts/e2e_sidecar.py` con pasos de export, merge, caché,
+  memoria y rango de fechas. E2E completo pasa: `merge_datasets: e2e-unido 832
+  filas`, `get_date_range: 2023-01-02 -> 2024-12-23 D`, `apply_date_range: 416
+  filas`, `E2E OK`.
+- `tsc -b` y `vite build` pasan; suite Vitest pasa.
+
 - Se corrigió la vista de resultados para recorrer tablas dentro de listas y
   tuplas, igual que la exportación; ambas usan ahora el mismo recolector.
 - El resumen ejecutivo de Causal Impact representa métricas, efectos y
@@ -111,3 +127,4 @@ sesión. No borrar entradas: lo completado queda como historial.
 | 2026-09-28 | Mejoras metodológicas parciales | Causal Impact usa selección PRE OOS; GeoX exige panel diario íntegro, solo TBR y umbral R² estricto; Regresión reporta holdout temporal y no atribuye árboles falsamente. Compilación sintáctica y smoke tests aislados pasaron; pytest, integraciones y funcionalidades restantes pendientes. |
 | 2026-09-28 | Regresión rolling OOS / selector ITS | Se añadieron folds expanding OOS y se expuso ITS en el selector. Compilación y smoke OLS determinista pasaron; suite pytest e integración aún no disponibles. |
 | 2026-09-28 | Presentación y simplificación de análisis | Se corrigió el renderizado de tablas anidadas y los valores no disponibles de Causal Impact; se actualizaron informes sobre parámetros automatizados. Compilación/smokes aislados pasan; validación gráfica y end-to-end pendiente. |
+| 2026-09-29 | Rendimiento, constructor de tablas y UI | Se eliminó el cuello de botella de `get_analysis_manifest` (13,8 s → 139 ms) extrayendo `get_table_format` por AST sin importar los plugins pesados. El constructor de tablas ahora proyecta solo las variables asignadas a fila/columna (antes mostraba todo el dataset). Se añadió una caché persistente del recuento de filas (`.rows.json` junto al Parquet, validada por tamaño/mtime de la fuente): el `COUNT(*)` de 4,3 GB pasa de ~13 s a ~2 ms en cargas posteriores y persiste entre procesos. Además, el primer recuento de un origen >16 MB ya no bloquea: `get_dataset_metadata`/`get_table_page` devuelven un total provisional marcado como aproximado (`rows_approximate`/`total_rows_approximate`) y el recuento exacto se calcula en un job de fondo; el frontend sondea hasta recibir el valor real. Se añadieron breakpoints responsivos (860/620 px), margen del logo y reubicación de mensajes sutiles. Sidecar reconstruido con PyInstaller y desplegado; sonda del sidecar congelado confirma `get_column_values`, la proyección correcta y `metadata rows: 6 approximate: False`. Suite Python 251 pasan / 2 fallos Tk preexistentes; Vitest 1 pasa; `tsc -b` limpio. Verificación final sobre `data test/`: los 4 datasets cargan y construyen tabla; el CSV de 4,3 GB carga en ~580 ms con `rows=0` (conteo diferido) y resuelve al valor exacto (22.303.560) en segundo plano. |

@@ -8,15 +8,19 @@ $core = Join-Path $workspace 'MedicionAgil_Light\python'
 $entry = Join-Path $core 'medicion_sidecar.py'
 $dist = Join-Path $workspace 'MedicionAgil_Light\dist'
 $work = Join-Path $workspace 'MedicionAgil_Light\build\sidecar'
+$spec = Join-Path $workspace 'MedicionAgil_Light'
 
 if (-not (Test-Path -LiteralPath $python)) {
     throw 'Falta .venv. Ejecuta scripts\bootstrap.ps1.'
 }
 
+# PyInstaller writes its progress to stderr. With $ErrorActionPreference='Stop'
+# PowerShell treats that as a NativeCommandError and aborts the build, so the
+# call is wrapped with a relaxed preference and the exit code is checked.
 $arguments = @(
     '-m', 'PyInstaller', '--noconfirm', '--onedir', '--console',
     '--name', 'medicion-sidecar', '--distpath', $dist, '--workpath', $work,
-    '--specpath', (Join-Path $workspace 'MedicionAgil_Light'),
+    '--specpath', $spec,
     '--paths', $app, '--paths', $core,
     '--add-data', "$(Join-Path $app 'analyses');analyses",
     '--collect-all', 'meridian_geox', '--collect-all', 'jax',
@@ -28,6 +32,10 @@ $arguments = @(
 )
 if ($Clean) { $arguments = @('-m', 'PyInstaller', '--clean') + $arguments[2..($arguments.Count - 1)] }
 
+$previous = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
 & $python @arguments
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$code = $LASTEXITCODE
+$ErrorActionPreference = $previous
+if ($code -ne 0) { exit $code }
 Write-Output "Sidecar: $(Join-Path $dist 'medicion-sidecar\medicion-sidecar.exe')"

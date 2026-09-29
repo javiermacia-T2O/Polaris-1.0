@@ -16,7 +16,7 @@ from typing import Any
 
 import pandas as pd
 
-from core.plugin_loader import discover_analyses, load_analysis
+from core.plugin_loader import discover_analyses, load_analysis, read_table_format
 from services.active_dataset import ActiveDataset
 from services.analysis_service import run_analysis as execute_analysis
 from services.data_service import read_dataset
@@ -26,7 +26,7 @@ from .errors import (AnalysisExecutionError, AnalysisValidationError,
                      UserInputError)
 from .jobs import JobManager
 from .schemas import (AnalysisManifest, DatasetMetadata, FilterSpec, JobStatus,
-                      ResultSummary, SortSpec, TablePage)
+                      ResultSummary, SortSpec, TableFormat, TablePage)
 from .serialization import frame_records, scalar_value
 
 
@@ -49,6 +49,10 @@ class _ResultEntry:
 class MedicionApplication:
     """Owns lightweight handles; heavy data remains in Python/DuckDB."""
 
+    # A full COUNT(*) over a CSV larger than this is deferred to a background
+    # thread so the UI never blocks on a multi-gigabyte scan.
+    _ASYNC_COUNT_BYTES = 16 * 1024 * 1024
+
     def __init__(self, *, max_workers: int = 2):
         self._datasets: dict[str, _DatasetEntry] = {}
         self._results: dict[str, _ResultEntry] = {}
@@ -56,6 +60,13 @@ class MedicionApplication:
         self.jobs = JobManager(max_workers=max_workers)
         self._analyses = {_analysis_id(item): item
                           for item in discover_analyses()}
+        # Row counts are expensive on multi-million-row sources (a full
+        # COUNT(*) scan).  Cache them per dataset version so metadata and
+        # column listings stay instant while the underlying data is unchanged.
+        self._row_counts: dict[str, tuple[str, int]] = {}
+        # Version tokens whose count is being computed in the background, so
+        # concurrent metadata polls never launch duplicate scans.
+        self._row_count_pending: set[tuple[str, str]] = set()
 
     def load_dataset(self, path: str | Path) -> DatasetMetadata:
         source = Path(path).expanduser().resolve()
@@ -84,16 +95,88 @@ class MedicionApplication:
             if self._datasets.pop(dataset_id, None) is None:
                 raise DataValidationError("Dataset no encontrado.",
                                           details={"dataset_id": dataset_id})
+            self._row_counts.pop(dataset_id, None)
+            self._row_count_pending = {
+                key for key in self._row_count_pending
+                if key[0] != dataset_id}
 
     def list_datasets(self) -> list[DatasetMetadata]:
         with self._lock:
             ids = list(self._datasets)
         return [self.get_dataset_metadata(dataset_id) for dataset_id in ids]
 
+    def _row_count(self, dataset_id: str, active: ActiveDataset) -> int:
+        """Return the row count, reusing the cached value for this version.
+
+        A full ``COUNT(*)`` over tens of millions of rows is the single most
+        expensive call the UI can trigger, and it is requested by metadata,
+        column listings and every preview page.  The count only changes when
+        the dataset version changes (filters, projection, date range), so it
+        is memoised against ``version_token``.
+        """
+        token = active.version_token()
+        cached = self._row_counts.get(dataset_id)
+        if cached is not None and cached[0] == token:
+            return cached[1]
+        rows = active.row_count()
+        self._row_counts[dataset_id] = (token, rows)
+        return rows
+
+    def _row_count_or_defer(self, dataset_id: str,
+                            active: ActiveDataset) -> tuple[int, bool]:
+        """Return ``(rows, approximate)`` without blocking on a huge scan.
+
+        The count is a property of the source file, so a previously seen file
+        answers instantly from the persisted cache.  When the file is large
+        and has never been counted, the exact total is computed in a
+        background thread and the caller gets a provisional ``0`` marked as
+        approximate; the UI polls metadata until the real value arrives.
+        """
+        token = active.version_token()
+        cached = self._row_counts.get(dataset_id)
+        if cached is not None and cached[0] == token:
+            return cached[1], False
+        known = active.row_count_cached()
+        if known is not None:
+            self._row_counts[dataset_id] = (token, known)
+            return known, False
+        if active.backend != "pandas" and active.file_size > self._ASYNC_COUNT_BYTES:
+            self._schedule_row_count(dataset_id, active, token)
+            return 0, True
+        rows = self._row_count(dataset_id, active)
+        return rows, False
+
+    def _schedule_row_count(self, dataset_id: str, active: ActiveDataset,
+                            token: str) -> None:
+        """Compute a large row count in the background, once per version."""
+        key = (dataset_id, token)
+        with self._lock:
+            if key in self._row_count_pending:
+                return
+            self._row_count_pending.add(key)
+
+        def work(_cancel, _progress):
+            try:
+                rows = active.row_count()
+            except Exception:
+                with self._lock:
+                    self._row_count_pending.discard(key)
+                return None
+            with self._lock:
+                # Only publish the result while the dataset is still open and
+                # its version has not changed under us.
+                if dataset_id in self._datasets:
+                    self._row_counts[dataset_id] = (token, rows)
+                self._row_count_pending.discard(key)
+            return None
+
+        self.jobs.submit("row_count", work)
+
     def get_dataset_metadata(self, dataset_id: str) -> DatasetMetadata:
         entry = self._dataset(dataset_id)
         try:
-            rows = entry.active.row_count()
+            rows, approximate = self._row_count_or_defer(dataset_id,
+                                                         entry.active)
         except MemoryError as exc:
             raise MemoryBudgetError(str(exc)) from exc
         status = entry.active.resource_status()
@@ -104,12 +187,20 @@ class MedicionApplication:
             backend=entry.active.backend, rows=rows, columns=columns,
             types=[type_map.get(column, "") for column in columns],
             uses_disk=bool(status["uses_disk"]),
-            source_path=str(entry.source_path) if entry.source_path else None)
+            source_path=str(entry.source_path) if entry.source_path else None,
+            rows_approximate=approximate)
 
     def get_columns(self, dataset_id: str) -> list[dict[str, str]]:
-        metadata = self.get_dataset_metadata(dataset_id)
-        return [{"name": name, "type": dtype}
-                for name, dtype in zip(metadata.columns, metadata.types)]
+        """List columns without paying for a row count.
+
+        The UI asks for columns far more often than for the row total, so this
+        reads the schema directly instead of routing through metadata.
+        """
+        entry = self._dataset(dataset_id)
+        columns = list(entry.active.projection or entry.active.columns)
+        type_map = dict(zip(entry.active.columns, entry.active.types))
+        return [{"name": name, "type": type_map.get(name, "")}
+                for name in columns]
 
     def get_column_profile(self, dataset_id: str, column: str) -> dict[str, Any]:
         entry = self._dataset(dataset_id)
@@ -127,6 +218,25 @@ class MedicionApplication:
             "examples": [scalar_value(item) for item in
                          series.dropna().drop_duplicates().head(20)],
         }
+
+    def get_column_values(self, dataset_id: str, column: str,
+                          limit: int = 500) -> dict[str, Any]:
+        """List the distinct values of one column for filter checkboxes.
+
+        The list is bounded so a high-cardinality column never floods the UI;
+        ``truncated`` tells the frontend to fall back to a free-text filter.
+        """
+        entry = self._dataset(dataset_id)
+        if column not in entry.active.columns:
+            raise UserInputError("Columna no encontrada.",
+                                 details={"column": column})
+        try:
+            values = entry.active.distinct_values(column, limit=limit)
+        except MemoryError as exc:
+            raise MemoryBudgetError(str(exc)) from exc
+        if values is None:
+            return {"column": column, "values": [], "truncated": True}
+        return {"column": column, "values": values, "truncated": False}
 
     def get_diagnostics(self) -> dict[str, Any]:
         from core.memory_budget import system_memory
@@ -185,6 +295,72 @@ class MedicionApplication:
         entry.active = entry.original
         return self.get_dataset_metadata(dataset_id)
 
+    def get_date_columns(self, dataset_id: str) -> list[dict[str, str]]:
+        """List detected date columns with their observed granularity."""
+        from core.loader import detect_granularity, get_date_columns
+
+        entry = self._dataset(dataset_id)
+        try:
+            frame = entry.active.preview(limit=1000)
+        except MemoryError as exc:
+            raise MemoryBudgetError(str(exc)) from exc
+        result = []
+        for column in get_date_columns(frame):
+            result.append({"column": column,
+                           "granularity": detect_granularity(frame, column)})
+        return result
+
+    def get_date_range(self, dataset_id: str, column: str) -> dict[str, Any]:
+        """Return the min/max dates and granularity for a date column."""
+        from core.loader import detect_granularity
+
+        entry = self._dataset(dataset_id)
+        if column not in entry.active.columns:
+            raise UserInputError("Columna de fecha no encontrada.",
+                                 details={"column": column})
+        try:
+            minimum, maximum = entry.active.date_range(column)
+        except MemoryError as exc:
+            raise MemoryBudgetError(str(exc)) from exc
+        except (KeyError, ValueError) as exc:
+            raise UserInputError("No se pudo calcular el rango de fechas.",
+                                 details={"reason": str(exc)}) from exc
+        granularity = "Original"
+        try:
+            granularity = detect_granularity(
+                entry.active.preview(limit=1000), column)
+        except Exception:
+            pass
+        return {
+            "column": column,
+            "start": str(pd.Timestamp(minimum).date()) if minimum is not None
+            and not pd.isna(minimum) else None,
+            "end": str(pd.Timestamp(maximum).date()) if maximum is not None
+            and not pd.isna(maximum) else None,
+            "granularity": granularity,
+        }
+
+    def apply_date_range(self, dataset_id: str, column: str,
+                         start: str | None = None,
+                         end: str | None = None) -> DatasetMetadata:
+        entry = self._dataset(dataset_id)
+        try:
+            entry.active = entry.active.with_date_range(column, start, end)
+        except KeyError as exc:
+            raise UserInputError("Columna de fecha no encontrada.",
+                                 details={"column": str(exc)}) from exc
+        except ValueError as exc:
+            raise UserInputError(str(exc),
+                                 details={"column": column}) from exc
+        return self.get_dataset_metadata(dataset_id)
+
+    def reset_date_range(self, dataset_id: str) -> DatasetMetadata:
+        entry = self._dataset(dataset_id)
+        entry.active = entry.active.with_date_range(
+            entry.active.date_bounds[0], None, None) if entry.active.date_bounds \
+            else entry.active
+        return self.get_dataset_metadata(dataset_id)
+
     def get_table_preview(self, dataset_id: str, offset: int = 0,
                           limit: int = 200) -> TablePage:
         return self.get_table_page(dataset_id, offset=offset, limit=limit)
@@ -205,11 +381,59 @@ class MedicionApplication:
         except KeyError as exc:
             raise UserInputError("Columna de orden no encontrada.",
                                  details={"column": str(exc)}) from exc
+        total_rows, approximate = self._row_count_or_defer(dataset_id,
+                                                           entry.active)
         return TablePage(
             dataset_id=dataset_id, offset=offset, limit=limit,
-            total_rows=entry.active.row_count(),
+            total_rows=total_rows,
             columns=[str(column) for column in frame.columns],
-            rows=frame_records(frame))
+            rows=frame_records(frame),
+            total_rows_approximate=approximate)
+
+    def preview_table(self, dataset_id: str, recipe: dict[str, Any],
+                      limit: int = 20) -> TablePage:
+        """Build a bounded, real-time preview of a table recipe.
+
+        The preview never materializes the full result: it compiles the same
+        recipe with a bounded source and returns the first rows so the UI can
+        render the construction live while the user picks dimensions.
+        """
+        from models.table_recipe import TableRecipe
+        from services.table_service import (build_table_preview_pandas,
+                                            preview_to_pandas)
+
+        entry = self._dataset(dataset_id)
+        try:
+            table_recipe = TableRecipe.from_parts(
+                rows=recipe.get("rows", ()), cols=recipe.get("columns", ()),
+                val_specs=recipe.get("values", ()),
+                filters=recipe.get("filters"),
+                pivot=recipe.get("pivot", True),
+                selected=recipe.get("selected", ()),
+                order=recipe.get("order", ()),
+                col_types=recipe.get("column_types"))
+            if entry.active.backend == "pandas":
+                # The preview must never materialize the whole frame: register
+                # the resident DataFrame and compile the same bounded recipe so
+                # the construction is shown progressively, dimension by
+                # dimension, exactly like the lazy backends.
+                frame = build_table_preview_pandas(
+                    entry.active._frame(), table_recipe.rows,
+                    table_recipe.columns, table_recipe.values,
+                    dict(table_recipe.filters), recipe=table_recipe)
+            else:
+                frame = preview_to_pandas(entry.active, table_recipe)
+            approximate = bool(frame.attrs.get("approximate", False))
+            frame = frame.head(max(1, min(int(limit), 200)))
+            return TablePage(
+                dataset_id=dataset_id, offset=0, limit=len(frame),
+                total_rows=len(frame),
+                columns=[str(column) for column in frame.columns],
+                rows=frame_records(frame),
+                approximate=approximate)
+        except (KeyError, ValueError) as exc:
+            raise UserInputError("La receta de tabla no es válida.",
+                                 details={"reason": str(exc)}) from exc
 
     def build_table(self, dataset_id: str, recipe: dict[str, Any]) -> str:
         from models.table_recipe import TableRecipe
@@ -225,7 +449,11 @@ class MedicionApplication:
                 selected=recipe.get("selected", ()),
                 order=recipe.get("order", ()),
                 col_types=recipe.get("column_types"))
-            view = build_table_view(entry.active, table_recipe)
+            if entry.active.backend == "pandas":
+                view = ActiveDataset.from_frame(
+                    self._build_pandas_table(entry.active._frame(), table_recipe))
+            else:
+                view = build_table_view(entry.active, table_recipe)
             table_id = uuid.uuid4().hex
             with self._lock:
                 self._datasets[table_id] = _DatasetEntry(
@@ -235,6 +463,134 @@ class MedicionApplication:
             raise UserInputError("La receta de tabla no es válida.",
                                  details={"reason": str(exc)}) from exc
 
+    def _build_pandas_table(self, frame: pd.DataFrame,
+                            recipe: Any) -> pd.DataFrame:
+        from core.memory_budget import ensure_dataframe_operation_fits
+
+        ensure_dataframe_operation_fits(frame, 2, "Constructor de tablas")
+        working = frame.copy()
+        for column, kind in recipe.column_types:
+            if column not in working.columns:
+                raise KeyError(column)
+            if kind == "numero":
+                working[column] = pd.to_numeric(working[column], errors="coerce")
+            elif kind == "fecha":
+                working[column] = pd.to_datetime(working[column], errors="coerce")
+            elif kind == "ignorar":
+                continue
+
+        ignored = {column for column, kind in recipe.column_types
+                   if kind == "ignorar"}
+        for column, allowed in recipe.filters:
+            if column not in working.columns:
+                raise KeyError(column)
+            working = working.loc[working[column].isin(allowed)]
+
+        values = list(recipe.values)
+        if not values:
+            # Without a metric the table shows the chosen dimensions only.
+            # Selecting a variable as Fila/Columna must never dump the whole
+            # dataset: fall back to the assigned dimensions, de-duplicated.
+            dimensions = [column for column in [*recipe.rows, *recipe.columns]
+                          if column not in ignored]
+            if dimensions:
+                missing = [column for column in dimensions
+                           if column not in working.columns]
+                if missing:
+                    raise KeyError(missing[0])
+                return working.loc[:, dimensions].drop_duplicates().reset_index(drop=True)
+            selected = list(recipe.selected) or [
+                column for column in working.columns if column not in ignored]
+            missing = [column for column in selected if column not in working.columns]
+            if missing:
+                raise KeyError(missing[0])
+            return working.loc[:, selected].copy()
+
+        for column in [*recipe.rows, *recipe.columns,
+                       *(metric for metric, _ in values)]:
+            if column not in working.columns:
+                raise KeyError(column)
+
+        pivots = recipe.pivots_for_values()
+
+        aggregation_names = {
+            "sum", "mean", "median", "min", "max", "count", "nunique",
+            "std", "first", "last",
+        }
+        for _, aggregation in values:
+            if aggregation not in aggregation_names:
+                raise ValueError(f"Agregación no soportada: {aggregation}")
+
+        names = []
+        counts: dict[str, int] = {}
+        for metric, aggregation in values:
+            counts[metric] = counts.get(metric, 0) + 1
+            names.append(metric if counts[metric] == 1
+                         else f"{metric} · {aggregation}")
+
+        def aggregate(source: pd.DataFrame, group_columns: list[str]) -> pd.DataFrame:
+            pieces = []
+            if group_columns:
+                grouped = source.groupby(group_columns, dropna=False, sort=False)
+                for (metric, aggregation), name in zip(values, names):
+                    piece = grouped[metric].agg(aggregation).rename(name).reset_index()
+                    pieces.append(piece)
+                result = pieces[0]
+                for piece in pieces[1:]:
+                    result = result.merge(piece, on=group_columns, how="outer",
+                                          validate="one_to_one")
+                return result
+
+            return pd.DataFrame([{
+                name: source[metric].agg(aggregation)
+                for (metric, aggregation), name in zip(values, names)
+            }])
+
+        if any(pivots) and recipe.columns:
+            pivot_columns = list(recipe.columns)
+            categories = working[pivot_columns].dropna().drop_duplicates()
+            if len(categories) > 50:
+                raise ValueError("Pivot con más de 50 columnas; filtra sus valores")
+            group_columns = list(dict.fromkeys([*recipe.rows, *pivot_columns]))
+            long = aggregate(working, group_columns)
+            index_column = "__table_row__"
+            index = list(recipe.rows)
+            if not index:
+                long[index_column] = 0
+                index = [index_column]
+            pieces = []
+            for name, pivot in zip(names, pivots):
+                if not pivot:
+                    continue
+                piece = long.pivot(index=index, columns=pivot_columns,
+                                   values=name)
+                piece.columns = [
+                    f"{name} · " + " | ".join(str(part) for part in value)
+                    if isinstance(value, tuple) else f"{name} · {value}"
+                    for value in piece.columns]
+                pieces.append(piece)
+            result = pd.concat(pieces, axis=1).reset_index()
+            flat_names = [name for name, pivot in zip(names, pivots)
+                          if not pivot]
+            if flat_names:
+                flat = aggregate(working, list(recipe.rows))
+                if not recipe.rows:
+                    flat[index_column] = 0
+                result = result.merge(flat, on=index, how="left",
+                                      validate="one_to_one")
+            if index_column in result.columns:
+                result = result.drop(columns=[index_column])
+        else:
+            groups = list(dict.fromkeys([*recipe.rows, *recipe.columns]))
+            result = aggregate(working, groups)
+
+        for column, ascending in recipe.order:
+            if column not in result.columns:
+                raise KeyError(column)
+            result = result.sort_values(column, ascending=ascending,
+                                        kind="mergesort")
+        return result.reset_index(drop=True)
+
     def list_analyses(self) -> list[AnalysisManifest]:
         return [self.get_analysis_manifest(analysis_id)
                 for analysis_id in self._analyses]
@@ -243,6 +599,10 @@ class MedicionApplication:
                               dataset_id: str | None = None) -> AnalysisManifest:
         item = self._analysis(analysis_id)
         parameter_schema = None
+        # ``get_table_format`` is a pure literal function: read it statically so
+        # listing analyses never imports heavy plugins (jax/geox/statsmodels).
+        format_data = read_table_format(item)
+        table_format = TableFormat(**format_data) if format_data else None
         if dataset_id is not None:
             dataset = self._dataset(dataset_id).active
             module = load_analysis(item)
@@ -253,6 +613,7 @@ class MedicionApplication:
             id=analysis_id, name=item["name"],
             description=item["description"], category=item["category"],
             parameter_schema=parameter_schema,
+            table_format=table_format,
             caution=_analysis_caution(analysis_id))
 
     def run_analysis(self, analysis_id: str, dataset_id: str,
@@ -308,6 +669,32 @@ class MedicionApplication:
                              analysis_id=entry.analysis_id,
                              tables=tables, charts=charts, scalars=scalars)
 
+    def get_result_chart(self, result_id: str, chart: str) -> dict[str, str]:
+        entry = self._result(result_id)
+        item = entry.value.get(chart)
+        figure = item.get("plot") if isinstance(item, dict) else None
+        if figure is None:
+            raise UserInputError("Gráfico de resultado no encontrado.",
+                                 details={"chart": chart})
+
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from ui.figure_utils import _is_matplotlib, _is_plotly, _plotly_to_matplotlib
+
+        if _is_plotly(figure):
+            figure = _plotly_to_matplotlib(figure)
+        if not _is_matplotlib(figure):
+            raise UserInputError("El gráfico no se puede representar.",
+                                 details={"chart": chart})
+
+        import base64
+        from io import BytesIO
+
+        output = BytesIO()
+        FigureCanvasAgg(figure).print_png(output)
+        return {"result_id": result_id, "chart": chart,
+                "mime_type": "image/png",
+                "data_base64": base64.b64encode(output.getvalue()).decode("ascii")}
+
     def get_result_table(self, result_id: str, table: str,
                          offset: int = 0, limit: int = 200) -> dict[str, Any]:
         entry = self._result(result_id)
@@ -334,6 +721,104 @@ class MedicionApplication:
         except (OSError, ValueError) as exc:
             raise ExportError("No se pudo exportar el resultado.",
                               details={"reason": str(exc)}) from exc
+
+    def export_dataset(self, dataset_id: str, path: str | Path,
+                       fmt: str) -> str:
+        """Export the active (filtered) dataset without loading it fully."""
+        entry = self._dataset(dataset_id)
+        try:
+            exported = entry.active.export(Path(path), fmt)
+            return str(exported or path)
+        except (OSError, ValueError) as exc:
+            raise ExportError("No se pudo exportar el dataset.",
+                              details={"reason": str(exc)}) from exc
+
+    def merge_datasets(self, dataset_ids: list[str], name: str = "",
+                       operation: str = "concat", mode: str = "all",
+                       keys: list[str] | None = None,
+                       how: str = "inner") -> DatasetMetadata:
+        """Combine two or more datasets into a new pooled dataset.
+
+        ``operation`` is ``concat`` (stack rows) or ``merge`` (join on keys).
+        ``mode`` selects ``all`` columns or only ``common`` ones for concat.
+        """
+        from services.merge_service import concat_datasets, merge_datasets
+
+        if len(dataset_ids) < 2:
+            raise UserInputError("Selecciona al menos 2 datasets para unir.")
+        entries = [self._dataset(dataset_id) for dataset_id in dataset_ids]
+        frames: dict[str, pd.DataFrame] = {}
+        for entry in entries:
+            try:
+                frames[entry.dataset_id] = entry.active.analysis_frame()
+            except MemoryError as exc:
+                raise MemoryBudgetError(str(exc)) from exc
+        try:
+            if operation == "concat":
+                result = concat_datasets(frames, dataset_ids, mode)
+            elif operation == "merge":
+                result = merge_datasets(frames, dataset_ids, keys or [], how)
+            else:
+                raise UserInputError("Operación de unión no soportada.",
+                                     details={"operation": operation})
+        except MemoryError as exc:
+            raise MemoryBudgetError(str(exc)) from exc
+        except (KeyError, ValueError) as exc:
+            raise UserInputError("No se pudieron unir los datasets.",
+                                 details={"reason": str(exc)}) from exc
+        dataset = ActiveDataset.from_frame(result)
+        dataset_id = uuid.uuid4().hex
+        label = name.strip() or "unido"
+        entry = _DatasetEntry(dataset_id, label, dataset, dataset, None)
+        with self._lock:
+            self._datasets[dataset_id] = entry
+        return self.get_dataset_metadata(dataset_id)
+
+    def get_cache_info(self) -> dict[str, Any]:
+        """Report the size of the on-disk Parquet cache."""
+        from core import engine as db_engine
+
+        try:
+            size_mb = float(db_engine.cache_size_mb())
+        except Exception:
+            size_mb = 0.0
+        return {"size_mb": round(size_mb, 2)}
+
+    def clear_cache(self) -> dict[str, Any]:
+        """Delete cached Parquet files, protecting active dataset sources."""
+        from core import engine as db_engine
+
+        protected: list[Path] = []
+        with self._lock:
+            entries = list(self._datasets.values())
+        for entry in entries:
+            if entry.source_path is not None:
+                protected.append(entry.source_path)
+        try:
+            removed = int(db_engine.clear_cache(protected))
+        except Exception as exc:
+            raise UserInputError("No se pudo limpiar la caché.",
+                                 details={"reason": str(exc)}) from exc
+        return {"removed": removed}
+
+    def free_memory(self, hard: bool = False) -> dict[str, Any]:
+        """Release Python caches; ``hard`` also resets the DuckDB connection."""
+        import gc
+
+        from core import engine as db_engine
+        from core.memory_budget import system_memory
+
+        if hard:
+            try:
+                db_engine.reset_conn()
+            except Exception:
+                pass
+        collected = gc.collect()
+        if hard:
+            collected += gc.collect()
+        memory = system_memory()
+        return {"collected": int(collected), "hard": bool(hard),
+                "available_bytes": memory.available}
 
     def shutdown(self) -> None:
         self.jobs.shutdown(wait=True)

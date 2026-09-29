@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from medicion_core import MedicionApplication
+from medicion_core.application import _DatasetEntry, _ResultEntry
 from medicion_core.errors import DataValidationError
 from medicion_core.jobs import JobManager
 from medicion_core.schemas import JobState
@@ -57,6 +58,34 @@ def test_dataset_handles_filter_page_and_reset(tmp_path):
         app.close_dataset(metadata.dataset_id)
         with pytest.raises(DataValidationError):
             app.get_dataset_metadata(metadata.dataset_id)
+    finally:
+        app.shutdown()
+
+
+def test_large_source_row_count_is_deferred_and_resolved(tmp_path, monkeypatch):
+    """A huge source must not block metadata; the count resolves in background."""
+    from services.active_dataset import ActiveDataset
+
+    source = tmp_path / "big.csv"
+    pd.DataFrame({"region": ["A", "B", "A"],
+                  "value": [1, 2, 3]}).to_csv(source, index=False)
+    dataset = ActiveDataset.open_file(source)
+    app = MedicionApplication(max_workers=1)
+    # Treat every non-pandas source as "huge" so the count is deferred.
+    app._ASYNC_COUNT_BYTES = 0
+    app._datasets["dataset-1"] = _DatasetEntry(
+        "dataset-1", "big", dataset, dataset, source)
+    try:
+        metadata = app.get_dataset_metadata("dataset-1")
+        assert metadata.rows_approximate is True
+        assert metadata.rows == 0
+        deadline = time.time() + 5
+        while app.get_dataset_metadata("dataset-1").rows_approximate \
+                and time.time() < deadline:
+            time.sleep(0.02)
+        resolved = app.get_dataset_metadata("dataset-1")
+        assert resolved.rows_approximate is False
+        assert resolved.rows == 3
     finally:
         app.shutdown()
 
@@ -112,6 +141,53 @@ def test_sidecar_rejects_wrong_token():
     server.application.shutdown()
     assert response["ok"] is False
     assert response["error"]["code"] == "SIDECAR_ERROR"
+
+
+
+def test_result_chart_is_returned_as_png_artifact():
+    import base64
+    from matplotlib.figure import Figure
+
+    app = MedicionApplication(max_workers=1)
+    figure = Figure(figsize=(2, 1))
+    figure.add_subplot(111).plot([0, 1], [1, 2])
+    app._results["result-1"] = _ResultEntry(
+        "result-1", "analysis-1", {"Ajuste": {"plot": figure}})
+    try:
+        artifact = app.get_result_chart("result-1", "Ajuste")
+        image = base64.b64decode(artifact["data_base64"])
+        assert artifact["mime_type"] == "image/png"
+        assert artifact["chart"] == "Ajuste"
+        assert image.startswith(b"\x89PNG\r\n\x1a\n")
+    finally:
+        app.shutdown()
+
+
+def test_build_table_aggregates_resident_pandas_dataset():
+    from services.active_dataset import ActiveDataset
+
+    app = MedicionApplication(max_workers=1)
+    frame = pd.DataFrame({"region": ["A", "A", "B"],
+                          "sales": ["2", "3", "7"]})
+    dataset = ActiveDataset.from_frame(frame)
+    app._datasets["dataset-1"] = _DatasetEntry(
+        "dataset-1", "fixture", dataset, dataset, None)
+    try:
+        table_id = app.build_table("dataset-1", {
+            "rows": ["region"],
+            "values": [{"col": "sales", "agg": "sum"}],
+            "column_types": {"sales": "numero"},
+            "pivot": False,
+        })
+        page = app.get_table_page(table_id, limit=10)
+        assert page.columns == ["region", "sales"]
+        assert {row["region"]: row["sales"] for row in page.rows} == {
+            "A": 5, "B": 7,
+        }
+        assert (app._datasets["dataset-1"].active.source["sales"].dtype
+            == frame["sales"].dtype)
+    finally:
+        app.shutdown()
 
 
 def test_diagnostics_imports_scientific_dependencies():

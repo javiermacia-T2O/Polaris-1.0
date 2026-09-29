@@ -64,8 +64,12 @@ impl SidecarProcess {
         thread::spawn(move || {
             for line in BufReader::new(stdout).lines() {
                 match line {
-                    Ok(value) if sender.send(value).is_err() => break,
-                    Ok(_) => {}
+                    Ok(value) => {
+                        if sender.send(value).is_err() {
+                            break;
+                        }
+                    },
+                    
                     Err(_) => break,
                 }
             }
@@ -184,6 +188,42 @@ fn select_dataset() -> Option<String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
+#[tauri::command]
+fn select_export_path(file_name: String, format: String) -> Option<String> {
+    let (label, extension) = match format.as_str() {
+        "csv" => ("CSV", "csv"),
+        "parquet" => ("Parquet", "parquet"),
+        _ => return None,
+    };
+    rfd::FileDialog::new()
+        .add_filter(label, &[extension])
+        .set_file_name(file_name)
+        .save_file()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+/// Persist a chart artifact (base64 PNG) chosen by the user.
+///
+/// The scientific engine renders charts as PNG bytes; the frontend receives
+/// them base64-encoded. This command asks for a destination and writes the
+/// decoded bytes, keeping the binary payload out of the JSON IPC channel.
+#[tauri::command]
+fn save_chart(file_name: String, data_base64: String) -> Result<Option<String>, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let Some(path) = rfd::FileDialog::new()
+        .add_filter("PNG", &["png"])
+        .set_file_name(file_name)
+        .save_file()
+    else {
+        return Ok(None);
+    };
+    let bytes = STANDARD
+        .decode(data_base64.as_bytes())
+        .map_err(|error| format!("Gráfico no válido: {error}"))?;
+    std::fs::write(&path, bytes).map_err(|error| format!("No se pudo guardar: {error}"))?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
 #[cfg(windows)]
 trait WindowsCreationFlags {
     fn creation_flags(&mut self, flags: u32) -> &mut Self;
@@ -264,7 +304,12 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![sidecar_request, select_dataset])
+        .invoke_handler(tauri::generate_handler![
+            sidecar_request,
+            select_dataset,
+            select_export_path,
+            save_chart
+        ])
         .build(tauri::generate_context!())
         .expect("error while building Tauri application")
         .run(|app, event| {

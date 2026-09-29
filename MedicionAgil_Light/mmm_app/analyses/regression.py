@@ -13,6 +13,24 @@ CATEGORY = "MMM"
 
 CUSTOM_DIALOG = "RegressionDialog"
 
+
+def get_table_format() -> dict:
+    """Estructura de tabla requerida por el análisis."""
+    return {
+        "summary": "Fecha | (dimensiones) | Objetivo | Variables de entrada",
+        "temporal": ["Fecha"],
+        "required_dimensions": [],
+        "optional_dimensions": ["Canal", "Soporte"],
+        "metrics": ["Variable objetivo", "Variables de entrada"],
+        "investment": ["Inversión"],
+        "rows": ["Fecha"],
+        "columns": [],
+        "values": ["Variable objetivo", "Variables de entrada"],
+        "requires_pivot": False,
+        "notes": "Serie temporal con la variable objetivo y las variables de "
+                 "entrada numéricas en columnas.",
+    }
+
 REGRESSION_TYPES = [
     "Automático (selección temporal OOS)",
     "OLS (mínimos cuadrados, con p-values)",

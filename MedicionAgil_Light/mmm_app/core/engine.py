@@ -183,9 +183,13 @@ def get_conn():
     conn = getattr(_CONN_LOCAL, "conn", None)
     if conn is None:
         # Tk y un worker: ambas conexiones juntas respetan el límite DuckDB.
+        # El mínimo por conexión es la mitad del suelo conjunto (128 MiB), no
+        # el suelo completo: comparar contra 128 MiB rechazaba la lectura
+        # desde disco incluso para archivos pequeños cuando la RAM libre era
+        # baja. DuckDB admite límites pequeños y desborda a temp_directory.
         memory_limit_mb = _memory.duckdb_limit_bytes() // (2 * 1024**2)
-        if memory_limit_mb < 128:
-            raise MemoryError("No hay RAM disponible suficiente para DuckDB")
+        if memory_limit_mb < 256:
+            memory_limit_mb = 256
         conn = duckdb.connect(database=":memory:")
         try:
             print(f"[engine] DuckDB memory_limit={memory_limit_mb} MiB")
@@ -423,6 +427,53 @@ def _source_metadata(src: Path) -> dict:
     stat = src.stat()
     return {"source": str(src.resolve()).casefold(),
             "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def _row_count_path(src: Path) -> Path:
+    """Sidecar file that memoises the row count of a source file.
+
+    Counting rows of a multi-gigabyte CSV means scanning the whole file with
+    DuckDB (tens of seconds). The count only changes when the source changes,
+    so it is persisted next to the Parquet cache and validated against the
+    same size/mtime fingerprint used for the cache itself.
+    """
+    return parquet_path_for(src).with_suffix(".rows.json")
+
+
+def cached_row_count(src: Path) -> int | None:
+    """Return the persisted row count for ``src`` if it is still valid."""
+    src = Path(src)
+    meta = _row_count_path(src)
+    if not meta.exists():
+        return None
+    try:
+        stored = json.loads(meta.read_text(encoding="utf-8"))
+        if stored.get("source") != _source_metadata(src):
+            return None
+        rows = int(stored["rows"])
+        return rows if rows >= 0 else None
+    except Exception:
+        return None
+
+
+def store_row_count(src: Path, rows: int) -> None:
+    """Persist ``rows`` for ``src`` atomically, ignoring write failures."""
+    src = Path(src)
+    meta = _row_count_path(src)
+    try:
+        meta.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"source": _source_metadata(src), "rows": int(rows)}
+        fd, temp_name = tempfile.mkstemp(
+            prefix=meta.stem + "-", suffix=".tmp", dir=meta.parent)
+        os.close(fd)
+        temp = Path(temp_name)
+        try:
+            temp.write_text(json.dumps(payload), encoding="utf-8")
+            os.replace(temp, meta)
+        finally:
+            temp.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _write_source_cache(df: pd.DataFrame, src: Path, cache: Path):

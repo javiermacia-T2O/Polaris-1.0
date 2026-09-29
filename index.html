@@ -3,11 +3,70 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0b1220" />
-    <title>Medición Ágil</title>
+    <meta name="theme-color" content="#0b1f3a" />
+    <link rel="icon" type="image/png" href="/src/assets/polaris-logo.png" />
+    <title>Polaris</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #0b1f3a; }
+      #boot {
+        position: fixed; inset: 0; z-index: 9999;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 26px; background: radial-gradient(120% 120% at 50% 0%, #16375f 0%, #0b1f3a 62%);
+        color: #e8f1fb; font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+        transition: opacity .45s ease;
+      }
+      #boot.hidden { opacity: 0; pointer-events: none; }
+      #boot .boot-mark { width: 92px; height: 92px; opacity: .96; animation: boot-float 3.4s ease-in-out infinite; }
+      #boot .boot-title {
+        font-family: "Bodoni MT", "Bodoni 72", Didot, "Times New Roman", serif;
+        font-size: 40px; letter-spacing: 7px; text-transform: uppercase; color: #fff; margin: 0;
+      }
+      #boot .boot-sub { margin: -14px 0 0; font-size: 10.5px; letter-spacing: 3.4px;
+        text-transform: uppercase; color: #7fa9d8; }
+      #boot .boot-bar { width: 232px; height: 3px; border-radius: 999px; background: #1d3f68; overflow: hidden; }
+      #boot .boot-bar i { display: block; height: 100%; width: 34%; border-radius: 999px;
+        background: linear-gradient(90deg, #5aa2e0, #8fc4f2); animation: boot-slide 1.5s ease-in-out infinite; }
+      #boot .boot-msg { min-height: 16px; font-size: 11.5px; color: #9dc0e6; letter-spacing: .3px; }
+      @keyframes boot-slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(330%); } }
+      @keyframes boot-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+    </style>
   </head>
   <body>
+    <div id="boot">
+      <img class="boot-mark" src="/src/assets/polaris-logo.png" alt="" />
+      <h1 class="boot-title">Polaris</h1>
+      <p class="boot-sub">Marketing Science</p>
+      <div class="boot-bar"><i></i></div>
+      <p class="boot-msg" id="boot-msg">Iniciando Polaris…</p>
+    </div>
     <div id="root"></div>
+    <script>
+      (function () {
+        var messages = [
+          "Iniciando Polaris…",
+          "Preparando el motor de análisis…",
+          "Conectando con el servicio local…",
+          "Cargando el catálogo de métodos…",
+          "Optimizando la memoria de trabajo…",
+          "Casi listo…",
+        ];
+        var index = 0;
+        var label = document.getElementById("boot-msg");
+        var timer = window.setInterval(function () {
+          index = (index + 1) % messages.length;
+          if (label) label.textContent = messages[index];
+        }, 1400);
+        window.__polarisBoot = {
+          done: function () {
+            window.clearInterval(timer);
+            var boot = document.getElementById("boot");
+            if (!boot) return;
+            boot.classList.add("hidden");
+            window.setTimeout(function () { boot.remove(); }, 500);
+          },
+        };
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

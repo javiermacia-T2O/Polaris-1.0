@@ -247,12 +247,46 @@ class ActiveDataset:
             return len(self._frame())
         self._check_source()
         where, params = self._where()
-        count = engine.get_conn().execute(
-            f"SELECT COUNT(*) FROM {self._source_sql()}{where}", self._params(params)
-        ).fetchone()[0]
+        # A full COUNT(*) over a multi-gigabyte CSV scans the whole file. When
+        # there is no filter/date narrowing the count is a property of the
+        # source file, so reuse the persisted value across sessions.
+        if not where:
+            cached = engine.cached_row_count(self.source)
+            if cached is not None:
+                return cached
+        # A full COUNT(*) over a multi-gigabyte CSV is memory-intensive.
+        # Temporarily raise DuckDB's memory limit for this single query so
+        # the scan does not OOM on large files; the limit is restored after.
+        conn = engine.get_conn()
+        original_limit = conn.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+        try:
+            conn.execute("SET memory_limit='512MB'")
+            count = conn.execute(
+                f"SELECT COUNT(*) FROM {self._source_sql()}{where}",
+                self._params(params)
+            ).fetchone()[0]
+        finally:
+            conn.execute(f"SET memory_limit='{original_limit}'")
         if cancel is not None and cancel.is_set():
             raise TaskCancelled()
-        return int(count)
+        count = int(count)
+        if not where:
+            engine.store_row_count(self.source, count)
+        return count
+
+    def row_count_cached(self) -> int | None:
+        """Return the row count without scanning, when it is already known.
+
+        Only the unfiltered count is a property of the source file, so a
+        filtered or date-narrowed view always returns ``None`` and must be
+        counted explicitly. This lets the UI show an instant total for a
+        previously seen file and defer the first scan of a huge one.
+        """
+        if self.backend == "pandas":
+            return len(self._frame())
+        if self.filters or self.date_bounds:
+            return None
+        return engine.cached_row_count(self.source)
 
     def preview(self, limit: int = 200, offset: int = 0, cancel=None) -> pd.DataFrame:
         return self.page(limit=limit, offset=offset, cancel=cancel)

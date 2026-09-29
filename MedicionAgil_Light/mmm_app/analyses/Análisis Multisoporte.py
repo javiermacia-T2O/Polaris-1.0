@@ -17,6 +17,24 @@ NAME = "Inversión ↔ KPI por Canal (acum + sat + marginal)"
 DESCRIPTION = "6 gráficos por canal: acumulado, saturación y marginal"
 CATEGORY = "Gráficos"
 
+
+def get_table_format() -> dict:
+    """Estructura de tabla requerida por el análisis."""
+    return {
+        "summary": "Fecha | Canal | Soporte | Inversión | KPI",
+        "temporal": ["Fecha"],
+        "required_dimensions": ["Canal", "Soporte"],
+        "optional_dimensions": [],
+        "metrics": ["KPI"],
+        "investment": ["Inversión"],
+        "rows": ["Fecha", "Canal", "Soporte"],
+        "columns": [],
+        "values": ["Inversión", "KPI"],
+        "requires_pivot": False,
+        "notes": "Jerarquía Fecha | Canal | Soporte con Inversión y KPI como "
+                 "métricas agregadas.",
+    }
+
 _INV_KEYS = ("inversión", "inversion", "spend", "coste", "costo",
              "gasto", "cost", "investment")
 _CANAL_KEYS = ("canal", "channel")
