@@ -21,6 +21,7 @@ import sys
 import hashlib
 import json
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -95,6 +96,89 @@ import threading
 _CONN_LOCAL = threading.local()
 _FILE_VIEWS = {}
 _FILE_VIEWS_VERSION = 0
+_FILE_VIEWS_LOCK = threading.Lock()
+
+
+class QueryCancellation:
+    """A request owns its connection until its scope exits.
+
+    Repeated interrupts cover cancellation between get_conn() and execute().
+    The lock prevents a late interrupt reaching the next request on a worker.
+    Python/native operations outside DuckDB remain cooperative.
+    """
+
+    def __init__(self):
+        self._cancel = threading.Event()
+        self._finished = threading.Event()
+        self._lock = threading.Lock()
+        self._conn = None
+        self._interrupt_thread = None
+
+    def is_set(self):
+        return self._cancel.is_set()
+
+    def wait(self, timeout=None):
+        return self._cancel.wait(timeout)
+
+    def set(self):
+        self.cancel()
+
+    def check(self):
+        if self.is_set():
+            from core.tasks import TaskCancelled
+            raise TaskCancelled()
+
+    def bind(self, conn):
+        with self._lock:
+            self.check()
+            self._conn = conn
+
+    def unbind(self):
+        with self._lock:
+            self._conn = None
+
+    def cancel(self):
+        with self._lock:
+            if self._finished.is_set():
+                return False
+            self._cancel.set()
+            interruptible = self._conn is not None
+            if interruptible and self._interrupt_thread is None:
+                self._interrupt_thread = threading.Thread(
+                    target=self._interrupt, name="duckdb-cancel", daemon=True)
+                self._interrupt_thread.start()
+            return interruptible
+
+    def _interrupt(self):
+        while not self._finished.is_set():
+            with self._lock:
+                if self._conn is not None:
+                    self._conn.interrupt()
+            self._finished.wait(0.025)
+
+    def finish(self):
+        with self._lock:
+            self._conn = None
+            self._finished.set()
+        if self._interrupt_thread is not None:
+            self._interrupt_thread.join()
+
+
+def current_cancellation():
+    return getattr(_CONN_LOCAL, "cancellation", None)
+
+
+@contextmanager
+def cancellation_scope(cancellation):
+    previous = current_cancellation()
+    _CONN_LOCAL.cancellation = cancellation
+    try:
+        cancellation.check()
+        yield
+    finally:
+        cancellation.finish()
+        _CONN_LOCAL.cancellation = previous
+
 
 def register_file_in_duckdb(path: Path, name: str = "_src_file") -> str:
     """
@@ -120,9 +204,11 @@ def register_file_in_duckdb(path: Path, name: str = "_src_file") -> str:
                 f"sample_size=-1, ignore_errors=true)"
             )
         global _FILE_VIEWS_VERSION
-        _FILE_VIEWS[name] = (path_posix, ext)
-        _FILE_VIEWS_VERSION += 1
-        _CONN_LOCAL.views_version = _FILE_VIEWS_VERSION
+        with _FILE_VIEWS_LOCK:
+            _FILE_VIEWS[name] = (path_posix, ext)
+            _FILE_VIEWS_VERSION += 1
+            # Other threads may have registered additional views meanwhile.
+            _CONN_LOCAL.views_version = -1
         return name
     except Exception as e:
         raise RuntimeError(f"No se pudo registrar '{path}' en DuckDB: {e}")
@@ -180,6 +266,9 @@ def get_conn():
         raise RuntimeError(
             "DuckDB no está instalado. Ejecuta: pip install duckdb"
         )
+    cancellation = current_cancellation()
+    if cancellation is not None:
+        cancellation.check()
     conn = getattr(_CONN_LOCAL, "conn", None)
     if conn is None:
         # Tk y un worker: ambas conexiones juntas respetan el límite DuckDB.
@@ -207,20 +296,28 @@ def get_conn():
             raise RuntimeError(f"No se pudo limitar la memoria de DuckDB: {e}") from e
         _CONN_LOCAL.conn = conn
         _CONN_LOCAL.views_version = -1
-    if _CONN_LOCAL.views_version != _FILE_VIEWS_VERSION:
-        for name, (path_posix, ext) in _FILE_VIEWS.items():
+    if cancellation is not None:
+        cancellation.bind(conn)
+    with _FILE_VIEWS_LOCK:
+        views_version = _FILE_VIEWS_VERSION
+        views = list(_FILE_VIEWS.items()) if _CONN_LOCAL.views_version != views_version else []
+    if _CONN_LOCAL.views_version != views_version:
+        for name, (path_posix, ext) in views:
             escaped = path_posix.replace("'", "''")
             source = (f"read_parquet('{escaped}')" if ext == ".parquet"
                       else f"read_csv_auto('{escaped}', sample_size=-1, "
                            "ignore_errors=true)")
             conn.execute(f'CREATE OR REPLACE VIEW "{name}" AS '
                          f'SELECT * FROM {source}')
-        _CONN_LOCAL.views_version = _FILE_VIEWS_VERSION
+        _CONN_LOCAL.views_version = views_version
     return conn
 
 
 def reset_conn():
     """Cierra la conexión del hilo actual (libera memoria)."""
+    cancellation = current_cancellation()
+    if cancellation is not None:
+        cancellation.unbind()
     conn = getattr(_CONN_LOCAL, "conn", None)
     if conn is not None:
         try:
@@ -965,4 +1062,3 @@ def cache_size_mb() -> float:
         except Exception:
             pass
     return total / 1024**2
-
