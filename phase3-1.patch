@@ -1,0 +1,1598 @@
+From fc9a2532997dcc5295925983b6f46e53cfa2085f Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Wed, 30 Sep 2026 21:28:43 +0200
+Subject: [PATCH 1/2] =?UTF-8?q?feat(fase3):=20navegaci=C3=B3n=20estable=20?=
+ =?UTF-8?q?y=20espacio=20unificado=20de=20datos?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Añade páginas con lookahead, filtros tipados paginados y cancelables, vínculos seguros de recursos por petición/job y materialización del constructor antes de confirmar éxito. Fusiona Datos y Constructor, mueve tipos a cabeceras y corrige el rol Filtro vacío que se deseleccionaba.
+---
+ MedicionAgil_Light/mmm_app/core/engine.py     |  13 +-
+ .../mmm_app/core/resource_manager.py          |   4 +-
+ .../mmm_app/services/active_dataset.py        | 185 ++++++++++++--
+ .../python/medicion_core/application.py       |  47 ++--
+ .../python/medicion_core/jobs.py              |  51 +++-
+ .../python/medicion_core/schemas.py           |   6 +-
+ .../python/medicion_core/sidecar.py           |  25 +-
+ src/app/App.tsx                               |   5 +-
+ src/app/KpiCards.tsx                          |   4 +-
+ src/app/Sidebar.tsx                           |   8 +-
+ src/app/store.ts                              |   4 +-
+ src/features/datasets/DataPreview.tsx         |  35 ++-
+ src/features/datasets/DatasetsScreen.tsx      | 241 +++++-------------
+ src/features/datasets/MergePanel.tsx          |   6 +-
+ src/features/tables/TableScreen.test.tsx      |  34 +++
+ src/features/tables/TableScreen.tsx           | 107 +++++---
+ src/shared/api.ts                             |  14 +-
+ src/shared/types.ts                           |   6 +-
+ src/styles.css                                |   8 +-
+ 19 files changed, 490 insertions(+), 313 deletions(-)
+ create mode 100644 src/features/tables/TableScreen.test.tsx
+
+diff --git a/MedicionAgil_Light/mmm_app/core/engine.py b/MedicionAgil_Light/mmm_app/core/engine.py
+index c21db89..0609b9e 100644
+--- a/MedicionAgil_Light/mmm_app/core/engine.py
++++ b/MedicionAgil_Light/mmm_app/core/engine.py
+@@ -186,12 +186,12 @@ def _configure_conn(conn):
+     # suelo completo: comparar contra 128 MiB rechazaba la lectura desde disco
+     # incluso para archivos pequeños cuando la RAM libre era baja. DuckDB
+     # admite límites pequeños y desborda a temp_directory.
+-    memory_limit_mb = _memory.duckdb_limit_bytes() // (2 * 1024**2)
+-    if memory_limit_mb < 256:
+-        memory_limit_mb = 256
++    from core.resource_manager import MIB, get_manager
++    profile = get_manager().profile
++    memory_limit_mb = max(128, profile.light_bytes // MIB)
+     try:
+         print(f"[engine] DuckDB memory_limit={memory_limit_mb} MiB")
+-        conn.execute(f"PRAGMA threads={min(N_THREADS, 4)}")
++        conn.execute(f"PRAGMA threads={profile.threads}")
+         conn.execute(f"PRAGMA memory_limit='{memory_limit_mb}MB'")
+         conn.execute(f"PRAGMA temp_directory='{CACHE_DIR.as_posix()}'")
+         conn.execute("PRAGMA enable_progress_bar=false")
+@@ -232,7 +232,7 @@ def _pool():
+     return _POOL
+ 
+ 
+-def get_conn():
++def get_conn(cancel=None, timeout: float | None = None):
+     """Conexión DuckDB exclusiva del hilo actual, prestada por el pool.
+ 
+     El préstamo dura toda la consulta y el consumo del reader; se libera con
+@@ -243,7 +243,7 @@ def get_conn():
+         raise RuntimeError(
+             "DuckDB no está instalado. Ejecuta: pip install duckdb"
+         )
+-    conn = _pool().acquire()
++    conn = _pool().acquire(cancel=cancel, timeout=timeout)
+     _apply_views(conn)
+     return conn
+ 
+@@ -1024,4 +1024,3 @@ def cache_size_mb() -> float:
+         except Exception:
+             pass
+     return total / 1024**2
+-
+diff --git a/MedicionAgil_Light/mmm_app/core/resource_manager.py b/MedicionAgil_Light/mmm_app/core/resource_manager.py
+index fd8fb69..dcfd3b4 100644
+--- a/MedicionAgil_Light/mmm_app/core/resource_manager.py
++++ b/MedicionAgil_Light/mmm_app/core/resource_manager.py
+@@ -38,6 +38,8 @@ HEAVY_OPERATIONS = frozenset({
+     "convert", "conversion", "join", "merge", "aggregate", "aggregation",
+     "sort", "export", "materialize", "analysis", "run_analysis",
+     "build_table", "materialize_table_result", "cache_as_parquet",
++    "export_dataset", "export_result", "merge_datasets", "preview_table",
++    "get_column_values", "get_date_range", "clear_cache",
+ })
+ 
+ # Máximo de consultas simultáneas y de ellas cuántas pueden ser pesadas.
+@@ -489,4 +491,4 @@ __all__ = [
+     "MAX_HEAVY_QUERIES", "ResourceUnavailable", "ResourceCancelled",
+     "ResourceProfile", "profile_for", "ResourceManager", "ConnectionPool",
+     "get_manager", "reset_manager",
+-]
+\ No newline at end of file
++]
+diff --git a/MedicionAgil_Light/mmm_app/services/active_dataset.py b/MedicionAgil_Light/mmm_app/services/active_dataset.py
+index cf14770..88e109e 100644
+--- a/MedicionAgil_Light/mmm_app/services/active_dataset.py
++++ b/MedicionAgil_Light/mmm_app/services/active_dataset.py
+@@ -1,7 +1,9 @@
+ """A logical dataset that can stay on disk instead of becoming a DataFrame."""
+ 
+ from dataclasses import dataclass, replace
++import base64
+ import hashlib
++import json
+ from collections import OrderedDict
+ from pathlib import Path
+ from typing import Any
+@@ -21,6 +23,7 @@ def _ident(name: str) -> str:
+ 
+ 
+ _STATS_CACHE = OrderedDict()
++_ROW_ID_BASE = "__polaris_rowid__"
+ 
+ 
+ def _is_memory_error(exc: BaseException) -> bool:
+@@ -49,7 +52,9 @@ class ActiveDataset:
+     origin_mtime_ns: int = 0
+     source_params: tuple[Any, ...] = ()
+     parent: "ActiveDataset | None" = None
++    dependencies: tuple["ActiveDataset", ...] = ()
+     version_hint: str | None = None
++    row_id_column: str | None = None
+ 
+     @classmethod
+     def open_file(cls, path: Path) -> "ActiveDataset":
+@@ -76,9 +81,13 @@ class ActiveDataset:
+                     "desde disco. Cierra otras aplicaciones y vuelve a "
+                     "intentarlo; el dataset no se ha cargado parcialmente.") from exc
+             raise
+-        return replace(probe,
+-                       columns=tuple(str(row[0]) for row in rows),
+-                       types=tuple(str(row[1]) for row in rows))
++        columns = tuple(str(row[0]) for row in rows)
++        hidden = _ROW_ID_BASE
++        while hidden in columns:
++            hidden = "_" + hidden
++        return replace(probe, columns=columns,
++                       types=tuple(str(row[1]) for row in rows),
++                       row_id_column=hidden)
+ 
+     @classmethod
+     def from_frame(cls, frame: pd.DataFrame) -> "ActiveDataset":
+@@ -86,15 +95,19 @@ class ActiveDataset:
+                    tuple(str(dtype) for dtype in frame.dtypes))
+ 
+     @classmethod
+-    def from_query(cls, sql: str, params: tuple, parent: "ActiveDataset",
+-                   version_hint: str) -> "ActiveDataset":
+-        parent._check_source()
++    def from_query(cls, sql: str, params: tuple,
++                   parent: "ActiveDataset | None", version_hint: str,
++                   dependencies: tuple["ActiveDataset", ...] = ()) -> "ActiveDataset":
++        deps = tuple(dependencies) or ((parent,) if parent is not None else ())
++        for dependency in deps:
++            dependency._check_source()
+         cursor = engine.get_conn().execute(
+             f"SELECT * FROM ({sql}) AS _table_result LIMIT 0", params)
+         description = cursor.description
+         return cls(sql, "query", tuple(str(item[0]) for item in description),
+                    tuple(str(item[1]) for item in description),
+                    source_params=tuple(params), parent=parent,
++                   dependencies=deps,
+                    version_hint=version_hint)
+ 
+     def version_token(self) -> str:
+@@ -103,11 +116,13 @@ class ActiveDataset:
+         elif self.backend == "registered":
+             identity = (self.version_hint or self.source, self.columns, self.types)
+         elif self.backend == "query":
+-            identity = (self.version_hint, self.parent.version_token(),
++            identity = (self.version_hint,
++                        tuple(item.version_token() for item in self.dependencies),
+                         self.source_params)
+         else:
+             identity = (str(self.source), self.file_size, self.file_mtime_ns,
+-                        str(self.origin), self.origin_size, self.origin_mtime_ns)
++                        str(self.origin), self.origin_size, self.origin_mtime_ns,
++                        self.row_id_column)
+         state = (identity, self.filters, self.projection, self.date_bounds)
+         return hashlib.sha256(repr(state).encode("utf-8")).hexdigest()
+ 
+@@ -140,13 +155,18 @@ class ActiveDataset:
+         if self.backend == "query":
+             return f"({self.source})"
+         path = str(self.source).replace("'", "''")
+-        if self.backend == "parquet":
+-            return f"read_parquet('{path}')"
+-        return f"read_csv_auto('{path}', sample_size=20480, ignore_errors=false)"
++        source = (f"read_parquet('{path}')" if self.backend == "parquet" else
++                  f"read_csv_auto('{path}', sample_size=20480, ignore_errors=false)")
++        if self.row_id_column:
++            return (f"(SELECT * EXCLUDE (ordinality), ordinality AS "
++                    f"{_ident(self.row_id_column)} FROM {source} WITH ORDINALITY) "
++                    "AS _polaris_source")
++        return source
+ 
+     def _check_source(self) -> None:
+         if self.backend == "query":
+-            self.parent._check_source()
++            for dependency in self.dependencies:
++                dependency._check_source()
+             return
+         if self.backend in {"pandas", "registered"}:
+             return
+@@ -159,6 +179,16 @@ class ActiveDataset:
+                     original.st_mtime_ns != self.origin_mtime_ns):
+                 raise RuntimeError("El archivo de origen cambió; vuelve a cargarlo")
+ 
++    def source_files(self) -> tuple[Path, ...]:
++        if self.backend == "query":
++            paths: list[Path] = []
++            for dependency in self.dependencies:
++                paths.extend(dependency.source_files())
++            return tuple(dict.fromkeys(paths))
++        if self.backend in {"parquet", "duckdb_csv"}:
++            return (Path(self.source).resolve(),)
++        return ()
++
+     def cache_as_parquet(self, cancel=None, progress=None) -> Path:
+         """Stream CSV/TSV to a validated Parquet cache, with atomic writes."""
+         if self.backend != "duckdb_csv":
+@@ -172,7 +202,17 @@ class ActiveDataset:
+         if free < source.stat().st_size * 2:
+             raise OSError("Espacio insuficiente para convertir CSV a Parquet")
+         before = engine._source_metadata(source)
+-        self.export(cache, "parquet", cancel, progress)
++        # DuckDB may parallelise a CSV scan and emit batches in a different
++        # order.  A cache is an implementation detail and must not make the
++        # same preview jump between rows, so force a single reader here.
++        conn = engine.get_conn(cancel=cancel)
++        previous_threads = conn.execute(
++            "SELECT current_setting('threads')").fetchone()[0]
++        try:
++            conn.execute("SET threads=1")
++            self.export(cache, "parquet", cancel, progress)
++        finally:
++            conn.execute(f"SET threads={int(previous_threads)}")
+         if engine._source_metadata(source) != before:
+             cache.unlink(missing_ok=True)
+             raise RuntimeError("El origen cambió durante la conversión")
+@@ -211,8 +251,15 @@ class ActiveDataset:
+             if not values:
+                 clauses.append("FALSE")
+             else:
+-                clauses.append(f"{_ident(column)} IN ({','.join('?' for _ in values)})")
+-                params.extend(values)
++                concrete = [value for value in values if value is not None]
++                alternatives = []
++                if concrete:
++                    alternatives.append(
++                        f"{_ident(column)} IN ({','.join('?' for _ in concrete)})")
++                    params.extend(concrete)
++                if any(value is None for value in values):
++                    alternatives.append(f"{_ident(column)} IS NULL")
++                clauses.append("(" + " OR ".join(alternatives) + ")")
+         if self.date_bounds:
+             column, start, end = self.date_bounds
+             date_sql = f"TRY_CAST({_ident(column)} AS DATE)"
+@@ -289,7 +336,7 @@ class ActiveDataset:
+         return self.page(limit=limit, offset=offset, cancel=cancel)
+ 
+     def page(self, limit: int = 200, offset: int = 0, sort=None,
+-             cancel=None) -> pd.DataFrame:
++             cancel=None, lookahead: bool = False) -> pd.DataFrame:
+         """Return one bounded page, optionally sorted by known columns."""
+         if not 0 <= limit <= 1000 or offset < 0:
+             raise ValueError("Preview limitado a 1000 filas por página")
+@@ -309,7 +356,8 @@ class ActiveDataset:
+                     [column for column, _ in sort],
+                     ascending=[ascending for _, ascending in sort],
+                     kind="mergesort")
+-            return frame.iloc[offset:offset + limit]
++            extra = 1 if lookahead else 0
++            return frame.iloc[offset:offset + limit + extra]
+         self._check_source()
+         if not selected:
+             return pd.DataFrame()
+@@ -317,12 +365,30 @@ class ActiveDataset:
+         sql = (f"SELECT {', '.join(_ident(c) for c in selected)} "
+                f"FROM {self._source_sql()}{where}")
+         if sort:
++            order = list(sort)
++            if self.row_id_column and self.row_id_column not in {
++                    column for column, _ in order}:
++                order.append((self.row_id_column, True))
+             sql += " ORDER BY " + ", ".join(
+                 f"{_ident(column)} {'ASC' if ascending else 'DESC'}"
+-                for column, ascending in sort)
+-        sql += f" LIMIT {limit} OFFSET {offset}"
++                for column, ascending in order)
++        fetch_limit = limit + (1 if lookahead else 0)
++        sql += f" LIMIT {fetch_limit} OFFSET {offset}"
+         started = time.perf_counter()
+-        result = engine.get_conn().execute(sql, self._params(params)).fetchdf()
++        conn = engine.get_conn(cancel=cancel)
++        previous_threads = None
++        # Physical order is the only cheap order for a multi-GB CSV.  DuckDB's
++        # parallel CSV scanner can interleave chunks, so use one thread only
++        # for an unsorted page.  Explicit sorts may use all configured threads.
++        if not sort and self.backend in {"duckdb_csv", "parquet"}:
++            previous_threads = conn.execute(
++                "SELECT current_setting('threads')").fetchone()[0]
++            conn.execute("SET threads=1")
++        try:
++            result = conn.execute(sql, self._params(params)).fetchdf()
++        finally:
++            if previous_threads is not None:
++                conn.execute(f"SET threads={int(previous_threads)}")
+         if debug_enabled():
+             log_debug("QUERY", "preview", backend=self.backend,
+                       version=self.version_token()[:12],
+@@ -530,8 +596,12 @@ class ActiveDataset:
+ 
+         path = Path(path)
+         with get_manager().reserve("heavy", cancel=cancel):
+-            reader = engine.get_conn().execute(
+-                sql, self._params(params)).to_arrow_reader(100_000)
++            conn = engine.get_conn(cancel=cancel)
++            # Keep every Arrow batch comfortably bounded even with wide text
++            # columns.  The row estimate is refined after the first batch.
++            batch_rows = 16_384
++            reader = conn.execute(
++                sql, self._params(params)).to_arrow_reader(batch_rows)
+             with atomic_output(path) as temporary:
+                 with temporary.open("wb") as stream:
+                     if fmt == "parquet":
+@@ -544,6 +614,10 @@ class ActiveDataset:
+                         for batch in reader:
+                             if cancel is not None and cancel.is_set():
+                                 raise TaskCancelled()
++                            if batch.nbytes > 256 * 1024 * 1024:
++                                raise MemoryError(
++                                    "Un bloque de exportación supera 256 MiB; "
++                                    "reduce el ancho de las columnas activas.")
+                             writer.write_batch(batch)
+                             written += batch.num_rows
+                             if progress is not None:
+@@ -668,6 +742,73 @@ class ActiveDataset:
+             return None
+         return sorted(str(row[0]) for row in rows)
+ 
++    def search_distinct_values(self, column: str, search: str = "",
++                               limit: int = 100, cursor: str | None = None,
++                               cancel=None) -> dict[str, Any]:
++        """Return one deterministic, typed page of distinct filter values.
++
++        The opaque cursor is tied to the current dataset version, column and
++        search text.  It intentionally contains only an offset: bounded pages
++        keep IPC small while DuckDB performs the distinct/order operation.
++        """
++        if column not in self.columns:
++            raise KeyError(column)
++        if not 1 <= limit <= 100:
++            raise ValueError("El límite debe estar entre 1 y 100")
++        version = self.version_token()
++        offset = 0
++        if cursor:
++            try:
++                payload = json.loads(base64.urlsafe_b64decode(
++                    cursor.encode("ascii") + b"=" * (-len(cursor) % 4)))
++            except Exception as exc:
++                raise ValueError("Cursor de valores no válido") from exc
++            if (payload.get("v") != version or payload.get("c") != column
++                    or payload.get("q") != search):
++                raise ValueError("El cursor ya no pertenece a esta vista")
++            offset = int(payload.get("o", 0))
++        if cancel is not None and cancel.is_set():
++            raise TaskCancelled()
++
++        if self.backend == "pandas":
++            series = self._frame()[column]
++            values = list(series.drop_duplicates())
++            if search:
++                needle = search.casefold()
++                values = [value for value in values if value is not None
++                          and needle in str(value).casefold()]
++            values.sort(key=lambda value: (value is not None,
++                                           type(value).__name__, str(value)))
++            page = values[offset:offset + limit + 1]
++        else:
++            self._check_source()
++            where, params = self._where()
++            quoted = _ident(column)
++            search_clause = ""
++            if search:
++                search_clause = (" AND " if where else " WHERE ") + \
++                    f"CAST({quoted} AS VARCHAR) ILIKE ?"
++                params.append(f"%{search}%")
++            sql = (f"SELECT DISTINCT {quoted} AS value "
++                   f"FROM {self._source_sql()}{where}{search_clause} "
++                   "ORDER BY value IS NOT NULL, typeof(value), "
++                   f"CAST(value AS VARCHAR) LIMIT {limit + 1} OFFSET {offset}")
++            page = [row[0] for row in engine.get_conn(cancel=cancel).execute(
++                sql, self._params(params)).fetchall()]
++        has_more = len(page) > limit
++        page = page[:limit]
++        next_cursor = None
++        if has_more:
++            raw = json.dumps({"v": version, "c": column, "q": search,
++                              "o": offset + limit}, separators=(",", ":"))
++            next_cursor = base64.urlsafe_b64encode(
++                raw.encode("utf-8")).decode("ascii").rstrip("=")
++        from medicion_core.serialization import scalar_value
++        return {"column": column,
++                "values": [scalar_value(value) for value in page],
++                "has_more": has_more, "next_cursor": next_cursor,
++                "version": version}
++
+ 
+ @dataclass(frozen=True)
+ class LazyLoaded:
+diff --git a/MedicionAgil_Light/python/medicion_core/application.py b/MedicionAgil_Light/python/medicion_core/application.py
+index d8376a7..79412a8 100644
+--- a/MedicionAgil_Light/python/medicion_core/application.py
++++ b/MedicionAgil_Light/python/medicion_core/application.py
+@@ -45,6 +45,7 @@ class _ResultEntry:
+     result_id: str
+     analysis_id: str
+     value: dict[str, Any]
++    resident_bytes: int = 0
+ 
+ 
+ class MedicionApplication:
+@@ -102,6 +103,7 @@ class MedicionApplication:
+                 details={"path": str(source), "reason": str(exc)}) from exc
+ 
+     def close_dataset(self, dataset_id: str) -> None:
++        self.jobs.cancel_owner(dataset_id)
+         with self._lock:
+             entry = self._datasets.pop(dataset_id, None)
+             if entry is None:
+@@ -139,7 +141,7 @@ class MedicionApplication:
+         return rows
+ 
+     def _row_count_or_defer(self, dataset_id: str,
+-                            active: ActiveDataset) -> tuple[int, bool]:
++                            active: ActiveDataset) -> tuple[int | None, bool]:
+         """Return ``(rows, approximate)`` without blocking on a huge scan.
+ 
+         The count is a property of the source file, so a previously seen file
+@@ -158,7 +160,7 @@ class MedicionApplication:
+             return known, False
+         if active.backend != "pandas" and active.file_size > self._ASYNC_COUNT_BYTES:
+             self._schedule_row_count(dataset_id, active, token)
+-            return 0, True
++            return None, True
+         rows = self._row_count(dataset_id, active)
+         return rows, False
+ 
+@@ -186,7 +188,7 @@ class MedicionApplication:
+                 self._row_count_pending.discard(key)
+             return None
+ 
+-        self.jobs.submit("row_count", work)
++        self.jobs.submit("row_count", work, owner_id=dataset_id)
+ 
+     def get_dataset_metadata(self, dataset_id: str) -> DatasetMetadata:
+         entry = self._dataset(dataset_id)
+@@ -236,7 +238,8 @@ class MedicionApplication:
+         }
+ 
+     def get_column_values(self, dataset_id: str, column: str,
+-                          limit: int = 500,
++                          limit: int = 100, search: str = "",
++                          cursor: str | None = None,
+                           cancel: threading.Event | None = None) -> dict[str, Any]:
+         """List the distinct values of one column for filter checkboxes.
+ 
+@@ -248,13 +251,11 @@ class MedicionApplication:
+             raise UserInputError("Columna no encontrada.",
+                                  details={"column": column})
+         try:
+-            values = entry.active.distinct_values(column, limit=limit,
+-                                                  cancel=cancel)
++            return entry.active.search_distinct_values(
++                column, search=search, limit=limit, cursor=cursor,
++                cancel=cancel)
+         except MemoryError as exc:
+             raise MemoryBudgetError(str(exc)) from exc
+-        if values is None:
+-            return {"column": column, "values": [], "truncated": True}
+-        return {"column": column, "values": values, "truncated": False}
+ 
+     def get_diagnostics(self) -> dict[str, Any]:
+         from core.memory_budget import system_memory
+@@ -397,18 +398,21 @@ class MedicionApplication:
+             frame = entry.active.page(
+                 limit=limit, offset=offset,
+                 sort=[(item.column, item.direction == "asc") for item in sorts],
+-                cancel=cancel)
++                cancel=cancel, lookahead=True)
+         except KeyError as exc:
+             raise UserInputError("Columna de orden no encontrada.",
+                                  details={"column": str(exc)}) from exc
+         total_rows, approximate = self._row_count_or_defer(dataset_id,
+                                                            entry.active)
++        has_more = len(frame) > limit
++        frame = frame.head(limit)
+         return TablePage(
+             dataset_id=dataset_id, offset=offset, limit=limit,
+             total_rows=total_rows,
+             columns=[str(column) for column in frame.columns],
+             rows=frame_records(frame),
+-            total_rows_approximate=approximate)
++            total_rows_approximate=approximate, has_more=has_more,
++            dataset_version=entry.active.version_token())
+ 
+     def preview_table(self, dataset_id: str, recipe: dict[str, Any],
+                       limit: int = 20) -> TablePage:
+@@ -455,7 +459,9 @@ class MedicionApplication:
+             raise UserInputError("La receta de tabla no es válida.",
+                                  details={"reason": str(exc)}) from exc
+ 
+-    def build_table(self, dataset_id: str, recipe: dict[str, Any]) -> str:
++    def build_table(self, dataset_id: str, recipe: dict[str, Any],
++                    cancel: threading.Event | None = None,
++                    progress: Any = None) -> str:
+         from models.table_recipe import TableRecipe
+         from services.table_service import build_table_view
+ 
+@@ -474,10 +480,15 @@ class MedicionApplication:
+                     self._build_pandas_table(entry.active._frame(), table_recipe))
+             else:
+                 view = build_table_view(entry.active, table_recipe)
++                from services.table_result_cache import materialize_table_result
++                view = materialize_table_result(
++                    view, cancel=cancel, progress=progress)
+             table_id = uuid.uuid4().hex
+             with self._lock:
+                 self._datasets[table_id] = _DatasetEntry(
+                     table_id, f"{entry.name} · tabla", view, view, None)
++            if progress is not None:
++                progress((100, "Tabla construida y lista"))
+             return table_id
+         except (KeyError, ValueError) as exc:
+             raise UserInputError("La receta de tabla no es válida.",
+@@ -668,7 +679,8 @@ class MedicionApplication:
+                     details={"type": type(exc).__name__,
+                              "reason": str(exc)}) from exc
+ 
+-        job_id = self.jobs.submit(f"analysis:{analysis_id}", work)
++        job_id = self.jobs.submit(f"analysis:{analysis_id}", work,
++                                  owner_id=dataset_id)
+         if cancel is not None:
+             self._bridge_cancel(job_id, cancel)
+         return job_id
+@@ -843,8 +855,7 @@ class MedicionApplication:
+         with self._lock:
+             entries = list(self._datasets.values())
+         for entry in entries:
+-            if entry.source_path is not None:
+-                protected.append(entry.source_path)
++            protected.extend(entry.active.source_files())
+         try:
+             removed = int(db_engine.clear_cache(protected))
+         except Exception as exc:
+@@ -873,6 +884,12 @@ class MedicionApplication:
+ 
+     def shutdown(self) -> None:
+         self.jobs.shutdown(wait=True)
++        from core.resource_manager import get_manager
++        with self._lock:
++            resident = sum(entry.resident_bytes for entry in self._datasets.values())
++            resident += sum(entry.resident_bytes for entry in self._results.values())
++        if resident:
++            get_manager().note_resident(-resident)
+ 
+     def _dataset(self, dataset_id: str) -> _DatasetEntry:
+         with self._lock:
+diff --git a/MedicionAgil_Light/python/medicion_core/jobs.py b/MedicionAgil_Light/python/medicion_core/jobs.py
+index 43eee81..175a6c4 100644
+--- a/MedicionAgil_Light/python/medicion_core/jobs.py
++++ b/MedicionAgil_Light/python/medicion_core/jobs.py
+@@ -24,9 +24,12 @@ class _Job:
+     status: JobStatus
+     cancel: threading.Event = field(default_factory=threading.Event)
+     lock: threading.Lock = field(default_factory=threading.Lock)
++    owner_id: str | None = None
++    thread_ident: int | None = None
+ 
+ 
+ class JobManager:
++    MAX_TERMINAL_HISTORY = 100
+     def __init__(self, max_workers: int = 2):
+         self._executor = ThreadPoolExecutor(
+             max_workers=max_workers, thread_name_prefix="medicion-job")
+@@ -34,10 +37,12 @@ class JobManager:
+         self._lock = threading.Lock()
+ 
+     def submit(self, job_type: str,
+-               work: Callable[[threading.Event, Callable], str | None]) -> str:
++               work: Callable[[threading.Event, Callable], str | None], *,
++               owner_id: str | None = None) -> str:
+         job_id = uuid.uuid4().hex
+         job = _Job(JobStatus(job_id=job_id, type=job_type,
+-                             state=JobState.QUEUED, created_at=_now()))
++                             state=JobState.QUEUED, created_at=_now()),
++                   owner_id=owner_id)
+         with self._lock:
+             self._jobs[job_id] = job
+ 
+@@ -56,6 +61,7 @@ class JobManager:
+                     return
+                 job.status.state = JobState.RUNNING
+                 job.status.started_at = _now()
++                job.thread_ident = threading.get_ident()
+             try:
+                 result_id = work(job.cancel, progress)
+                 with job.lock:
+@@ -82,6 +88,14 @@ class JobManager:
+             finally:
+                 with job.lock:
+                     job.status.finished_at = _now()
++                    job.thread_ident = None
++                try:
++                    from core import engine as db_engine
++                    db_engine.release_conn()
++                except Exception:
++                    pass
++                with self._lock:
++                    self._prune_locked()
+ 
+         self._executor.submit(run)
+         return job_id
+@@ -95,10 +109,26 @@ class JobManager:
+         job = self._get(job_id)
+         job.cancel.set()
+         with job.lock:
++            ident = job.thread_ident
+             if job.status.state == JobState.QUEUED:
+                 job.status.state = JobState.CANCELLED
+                 job.status.finished_at = _now()
+-            return job.status.model_copy(deep=True)
++            status = job.status.model_copy(deep=True)
++        if ident is not None:
++            try:
++                from core import engine as db_engine
++                db_engine.interrupt_thread(ident)
++            except Exception:
++                pass
++        return status
++
++    def cancel_owner(self, owner_id: str) -> int:
++        with self._lock:
++            ids = [job_id for job_id, job in self._jobs.items()
++                   if job.owner_id == owner_id]
++        for job_id in ids:
++            self.cancel(job_id)
++        return len(ids)
+ 
+     def list(self) -> list[JobStatus]:
+         with self._lock:
+@@ -107,9 +137,9 @@ class JobManager:
+ 
+     def shutdown(self, wait: bool = True) -> None:
+         with self._lock:
+-            jobs = list(self._jobs.values())
+-        for job in jobs:
+-            job.cancel.set()
++            ids = list(self._jobs)
++        for job_id in ids:
++            self.cancel(job_id)
+         self._executor.shutdown(wait=wait, cancel_futures=True)
+ 
+     def _get(self, job_id: str) -> _Job:
+@@ -119,6 +149,15 @@ class JobManager:
+             raise KeyError(f"Job no encontrado: {job_id}")
+         return job
+ 
++    def _prune_locked(self) -> None:
++        terminal = {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
++        finished = [(job_id, job.status.finished_at or "")
++                    for job_id, job in self._jobs.items()
++                    if job.status.state in terminal]
++        for job_id, _ in sorted(finished, key=lambda item: item[1])[
++                :-self.MAX_TERMINAL_HISTORY]:
++            self._jobs.pop(job_id, None)
++
+ 
+ def _progress_parts(value: Any) -> tuple[int, str]:
+     if isinstance(value, tuple) and len(value) == 2:
+diff --git a/MedicionAgil_Light/python/medicion_core/schemas.py b/MedicionAgil_Light/python/medicion_core/schemas.py
+index ec0d561..9de51af 100644
+--- a/MedicionAgil_Light/python/medicion_core/schemas.py
++++ b/MedicionAgil_Light/python/medicion_core/schemas.py
+@@ -16,7 +16,7 @@ class DatasetMetadata(ApiModel):
+     dataset_id: str
+     name: str
+     backend: str
+-    rows: int
++    rows: int | None
+     columns: list[str]
+     types: list[str]
+     uses_disk: bool
+@@ -41,13 +41,15 @@ class TablePage(ApiModel):
+     dataset_id: str
+     offset: int
+     limit: int
+-    total_rows: int
++    total_rows: int | None
+     columns: list[str]
+     rows: list[dict[str, Any]]
+     approximate: bool = False
+     # True while ``total_rows`` is provisional (a huge source is still being
+     # counted in the background); the UI polls until the exact total arrives.
+     total_rows_approximate: bool = False
++    has_more: bool = False
++    dataset_version: str = ""
+ 
+ 
+ class AnalysisManifest(ApiModel):
+diff --git a/MedicionAgil_Light/python/medicion_core/sidecar.py b/MedicionAgil_Light/python/medicion_core/sidecar.py
+index fa70791..c54d6de 100644
+--- a/MedicionAgil_Light/python/medicion_core/sidecar.py
++++ b/MedicionAgil_Light/python/medicion_core/sidecar.py
+@@ -395,14 +395,6 @@ class SidecarServer:
+         # they must answer even when every connection is busy with a heavy
+         # query, so they never wait on a reservation.
+         operation = str(request.get("operation") or "")
+-        if operation not in _CONTROL_OPERATIONS:
+-            try:
+-                from core import engine as db_engine
+-
+-                registry.attach_conn(request_id, db_engine.get_conn())
+-            except Exception:
+-                pass
+-
+         def progress(value: Any) -> None:
+             percent, message = _progress_parts(value)
+             writer.send({"id": request_id, "type": "progress",
+@@ -410,8 +402,21 @@ class SidecarServer:
+ 
+         started = time.perf_counter()
+         try:
+-            response = self.handle(request, cancel=pending.cancel,
+-                                   progress=progress, request_id=request_id)
++            if operation in _CONTROL_OPERATIONS:
++                response = self.handle(request, cancel=pending.cancel,
++                                       progress=progress, request_id=request_id)
++            else:
++                from core import engine as db_engine
++                from core.resource_manager import HEAVY_OPERATIONS, get_manager
++                params = request.get("params") or {}
++                heavy = operation in HEAVY_OPERATIONS or (
++                    operation == "get_table_page" and bool(params.get("sort")))
++                with get_manager().reserve(
++                        "heavy" if heavy else "light", cancel=pending.cancel):
++                    conn = db_engine.get_conn(cancel=pending.cancel)
++                    registry.attach_conn(request_id, conn)
++                    response = self.handle(request, cancel=pending.cancel,
++                                           progress=progress, request_id=request_id)
+         except Exception as exc:  # pragma: no cover - defensive
+             response = {"id": request_id, "type": "response", "ok": False,
+                         "error": SidecarError(
+diff --git a/src/app/App.tsx b/src/app/App.tsx
+index 0fd2ca2..1523b82 100644
+--- a/src/app/App.tsx
++++ b/src/app/App.tsx
+@@ -4,7 +4,6 @@ import { AnalysisProvider, useAnalysis } from "./AnalysisContext";
+ import { Sidebar } from "./Sidebar";
+ import { KpiCards } from "./KpiCards";
+ import { DatasetsScreen } from "../features/datasets/DatasetsScreen";
+-import { TableScreen } from "../features/tables/TableScreen";
+ import { AnalysesScreen } from "../features/analyses/AnalysesScreen";
+ import { ResultsScreen } from "../features/results/ResultsScreen";
+ import { ChartsScreen } from "../features/results/ChartsScreen";
+@@ -13,7 +12,6 @@ import { ProgressModal } from "../shared/ProgressModal";
+ 
+ const tabs: Array<{ id: Screen; label: string }> = [
+   { id: "datos", label: "Datos" },
+-  { id: "tabla", label: "Constructor de tablas" },
+   { id: "analisis", label: "Análisis" },
+   { id: "resultados", label: "Resultados" },
+   { id: "graficos", label: "Gráficos" },
+@@ -29,7 +27,7 @@ function Shell() {
+   const { selected, job, modalOpen, setModalOpen, cancel, openResults } = useAnalysis();
+ 
+   useEffect(() => {
+-    if (!status) return;
++    if (!status || status.sticky) return;
+     const timer = window.setTimeout(() => setStatus(null), 4000);
+     return () => window.clearTimeout(timer);
+   }, [status, setStatus]);
+@@ -52,7 +50,6 @@ function Shell() {
+       </nav>
+       <main className="content">
+         {screen === "datos" && <DatasetsScreen />}
+-        {screen === "tabla" && <TableScreen />}
+         {screen === "analisis" && <AnalysesScreen />}
+         {screen === "resultados" && <ResultsScreen />}
+         {screen === "graficos" && <ChartsScreen />}
+diff --git a/src/app/KpiCards.tsx b/src/app/KpiCards.tsx
+index f84e7b6..0a352a3 100644
+--- a/src/app/KpiCards.tsx
++++ b/src/app/KpiCards.tsx
+@@ -17,7 +17,7 @@ export function KpiCards() {
+   const categorical = Math.max(0, (active?.columns.length ?? 0) - numeric);
+ 
+   const specs = [
+-    { label: "Filas", value: active ? active.rows.toLocaleString("es-ES") : "—", tone: "primary" },
++    { label: "Filas", value: active?.rows === null ? "Contando…" : active ? active.rows.toLocaleString("es-ES") : "—", tone: "primary" },
+     { label: "Columnas", value: active ? active.columns.length : "—", tone: "purple" },
+     { label: "Numéricas", value: active ? numeric : "—", tone: "success" },
+     { label: "Categóricas", value: active ? categorical : "—", tone: "warning" },
+@@ -30,4 +30,4 @@ export function KpiCards() {
+       <strong>{spec.value}</strong>
+     </article>)}
+   </div>;
+-}
+\ No newline at end of file
++}
+diff --git a/src/app/Sidebar.tsx b/src/app/Sidebar.tsx
+index 2d5ff35..8d96de9 100644
+--- a/src/app/Sidebar.tsx
++++ b/src/app/Sidebar.tsx
+@@ -59,12 +59,14 @@ export function Sidebar() {
+       const path = await api.selectDataset();
+       return path ? api.loadDataset(path) : null;
+     },
+-    onMutate: () => setStatus({ message: "Abriendo archivo…", kind: "info" }),
++    onMutate: () => setStatus({ message: "Abriendo archivo…", kind: "info", sticky: true }),
+     onSuccess: async (data) => {
+       if (!data) { setStatus(null); return; }
+       setActiveDataset(data.dataset_id);
+-      setStatus({ message: `'${data.name}' cargado · ${data.rows.toLocaleString("es-ES")} filas`, kind: "success" });
+       await client.invalidateQueries({ queryKey: ["datasets"] });
++      await client.fetchQuery({ queryKey: ["preview", data.dataset_id, 0, 100, null],
++        queryFn: () => api.tablePage(data.dataset_id, 0, 100) });
++      setStatus({ message: `'${data.name}' listo · ${data.rows === null ? "contando filas…" : `${data.rows.toLocaleString("es-ES")} filas`}`, kind: "success" });
+     },
+     onError: (error: Error) => setStatus({ message: `No se pudo abrir el archivo: ${error.message}`, kind: "error" }),
+   });
+@@ -171,4 +173,4 @@ export function Sidebar() {
+       {active ? "Dataset seleccionado" : "Sin dataset activo"}
+     </div>
+   </aside>;
+-}
+\ No newline at end of file
++}
+diff --git a/src/app/store.ts b/src/app/store.ts
+index 882b8f9..a923402 100644
+--- a/src/app/store.ts
++++ b/src/app/store.ts
+@@ -1,9 +1,9 @@
+ import { create } from "zustand";
+ 
+-export type Screen = "datos" | "tabla" | "analisis" | "resultados" | "graficos" | "diagnostico";
++export type Screen = "datos" | "analisis" | "resultados" | "graficos" | "diagnostico";
+ 
+ export type StatusKind = "info" | "success" | "warning" | "error";
+-export type Status = { message: string; kind: StatusKind } | null;
++export type Status = { message: string; kind: StatusKind; sticky?: boolean } | null;
+ 
+ type UiState = {
+   screen: Screen;
+diff --git a/src/features/datasets/DataPreview.tsx b/src/features/datasets/DataPreview.tsx
+index 6be9f5e..a5e54b2 100644
+--- a/src/features/datasets/DataPreview.tsx
++++ b/src/features/datasets/DataPreview.tsx
+@@ -1,35 +1,50 @@
+-import { useState } from "react";
++import { useEffect, useState } from "react";
+ import { useQuery } from "@tanstack/react-query";
+ import { api } from "../../shared/api";
+ 
+-const PAGE_SIZE = 100;
++const TYPE_OPTIONS = [
++  ["numero", "Número"], ["texto", "Texto"], ["categorica", "Categoría"],
++  ["fecha", "Fecha"], ["ignorar", "Ignorar"],
++] as const;
+ 
+-export function DataPreview({ datasetId, totalRows, totalRowsApproximate = false }: { datasetId: string; totalRows: number; totalRowsApproximate?: boolean }) {
++export function DataPreview({ datasetId, totalRows, totalRowsApproximate = false,
++  columnTypes = {}, onColumnTypeChange }: {
++  datasetId: string; totalRows: number | null; totalRowsApproximate?: boolean;
++  columnTypes?: Record<string, string>;
++  onColumnTypeChange?: (column: string, type: string) => void;
++}) {
+   const [offset, setOffset] = useState(0);
+   const [limit, setLimit] = useState(100);
+   const [sort, setSort] = useState<{ column: string; direction: "asc" | "desc" } | null>(null);
++  useEffect(() => { setOffset(0); setSort(null); }, [datasetId]);
+   const preview = useQuery({
+     queryKey: ["preview", datasetId, offset, limit, sort],
+-    queryFn: () => api.tablePage(datasetId, offset, limit, sort ? [sort] : []),
+-    // While the exact total is being counted in the background, poll so the
+-    // pager bounds and the "de N filas" label update on their own.
++    queryFn: ({ signal }) => api.tablePage(datasetId, offset, limit,
++      sort ? [sort] : [], { signal }),
+     refetchInterval: (query) => query.state.data?.total_rows_approximate ? 1000 : false,
+   });
+   const total = preview.data?.total_rows ?? totalRows;
+   const approximate = preview.data?.total_rows_approximate ?? totalRowsApproximate;
+-  const totalLabel = approximate ? "contando…" : `${total.toLocaleString("es-ES")} filas`;
++  const hasMore = preview.data?.has_more ?? (total !== null && offset + limit < total);
++  const totalLabel = approximate || total === null ? "contando…" : `${total.toLocaleString("es-ES")} filas`;
++  const shown = preview.data?.rows.length ?? 0;
++  const end = Math.min(total ?? offset + shown, offset + shown);
+   return <article className="panel"><div className="panel-head"><div><h2>Vista previa</h2>
+     <p>{preview.data?.columns.length ?? 0} columnas · {totalLabel}</p></div>
+     <div className="pager"><select aria-label="Filas por página" value={limit} onChange={(event) => { setLimit(Number(event.target.value)); setOffset(0); }}>
+       {[50, 100, 250, 500, 1000].map((size) => <option key={size} value={size}>{size} / página</option>)}</select>
+       <button onClick={() => setOffset(Math.max(0, offset - limit))} disabled={!offset}>Anterior</button>
+-      <span>{total ? offset + 1 : 0}–{Math.min(total, offset + limit)} de {approximate ? "…" : total.toLocaleString("es-ES")}</span>
+-      <button onClick={() => setOffset(offset + limit)} disabled={approximate || offset + limit >= total}>Siguiente</button></div></div>
++      <span>{shown ? offset + 1 : 0}–{end} de {approximate || total === null ? "…" : total.toLocaleString("es-ES")}</span>
++      <button onClick={() => setOffset(offset + limit)} disabled={!hasMore}>Siguiente</button></div></div>
+     {preview.isLoading && <div className="loading">Cargando vista previa…</div>}
+     {preview.error && <div className="error">{preview.error.message}</div>}
+     {preview.data && <div className="table-wrap"><table><thead><tr>{preview.data.columns.map((column) => <th key={column}>
+       <button className="sort-button" onClick={() => { setSort((current) => ({ column, direction: current?.column === column && current.direction === "asc" ? "desc" : "asc" })); setOffset(0); }}>
+-        {column}{sort?.column === column ? (sort.direction === "asc" ? " ↑" : " ↓") : ""}</button></th>)}</tr></thead>
++        {column}{sort?.column === column ? (sort.direction === "asc" ? " ↑" : " ↓") : ""}</button>
++      {onColumnTypeChange && <select className="column-type-select" aria-label={`Tipo de ${column}`}
++        value={columnTypes[column] ?? "texto"} onChange={(event) => onColumnTypeChange(column, event.target.value)}>
++        {TYPE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>}
++    </th>)}</tr></thead>
+       <tbody>{preview.data.rows.map((row, index) => <tr key={offset + index}>{preview.data!.columns.map((column) =>
+         <td key={column}>{String(row[column] ?? "")}</td>)}</tr>)}</tbody></table></div>}
+   </article>;
+diff --git a/src/features/datasets/DatasetsScreen.tsx b/src/features/datasets/DatasetsScreen.tsx
+index e3b9d44..f8c7b80 100644
+--- a/src/features/datasets/DatasetsScreen.tsx
++++ b/src/features/datasets/DatasetsScreen.tsx
+@@ -1,19 +1,11 @@
+-import { useEffect, useMemo, useState } from "react";
++import { useEffect, useRef, useState } from "react";
+ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+ import { api } from "../../shared/api";
+ import { useUiStore } from "../../app/store";
+ import { DataPreview } from "./DataPreview";
+ import { MergePanel } from "./MergePanel";
++import { TableScreen } from "../tables/TableScreen";
+ import { Loading } from "../../shared/Loading";
+-import { CheckboxList } from "../../shared/CheckboxList";
+-
+-const TYPE_OPTIONS = [
+-  { value: "numero", label: "Número" },
+-  { value: "texto", label: "Texto" },
+-  { value: "categorica", label: "Categoría" },
+-  { value: "fecha", label: "Fecha" },
+-  { value: "ignorar", label: "Ignorar" },
+-];
+ 
+ function guessType(type: string) {
+   if (/int|float|double|decimal|numeric|number/i.test(type)) return "numero";
+@@ -24,200 +16,83 @@ function guessType(type: string) {
+ 
+ export function DatasetsScreen() {
+   const client = useQueryClient();
+-  const { activeDatasetId, setActiveDataset, setStatus, columnTypes, setColumnTypes, setColumnType } = useUiStore();
+-  const [filterColumn, setFilterColumn] = useState("");
+-  const [filterValues, setFilterValues] = useState<string[]>([]);
++  const { activeDatasetId, setActiveDataset, setStatus, columnTypes,
++    setColumnTypes, setColumnType } = useUiStore();
+   const [previewKey, setPreviewKey] = useState(0);
+-
++  const typedDatasetId = useRef<string | null>(null);
+   const datasets = useQuery({
+-    queryKey: ["datasets"],
+-    queryFn: api.listDatasets,
+-    // A huge source is counted in the background; poll until the exact total
+-    // arrives so the provisional "0 filas" is replaced without a manual refresh.
+-    refetchInterval: (query) => (query.state.data ?? []).some((item) => item.rows_approximate) ? 1000 : false,
++    queryKey: ["datasets"], queryFn: api.listDatasets,
++    refetchInterval: (query) => (query.state.data ?? []).some(
++      (item) => item.rows_approximate) ? 1000 : false,
+   });
+-  const active = datasets.data?.find((item) => item.dataset_id === activeDatasetId) ?? datasets.data?.[0];
+-
+-  const columnsQuery = useQuery({
++  const active = datasets.data?.find((item) => item.dataset_id === activeDatasetId)
++    ?? datasets.data?.[0];
++  const columns = useQuery({
+     queryKey: ["columns", active?.dataset_id],
+-    queryFn: () => api.columns(active!.dataset_id),
+-    enabled: Boolean(active?.dataset_id),
++    queryFn: () => api.columns(active!.dataset_id), enabled: Boolean(active),
+   });
+ 
+-  const profile = useQuery({
+-    queryKey: ["profile", active?.dataset_id, filterColumn],
+-    queryFn: () => api.columnProfile(active!.dataset_id, filterColumn),
+-    enabled: Boolean(active?.dataset_id && filterColumn),
+-  });
+-
+-  const filterOptions = useMemo(() => (profile.data?.examples ?? [])
+-    .map((value) => String(value)), [profile.data]);
+-
+   useEffect(() => {
+-    if (!columnsQuery.data) return;
+-    const next: Record<string, string> = {};
+-    for (const column of columnsQuery.data) next[column.name] = guessType(column.type);
+-    setColumnTypes(next);
+-  }, [columnsQuery.data, setColumnTypes]);
++    if (!active || !columns.data || typedDatasetId.current === active.dataset_id) return;
++    setColumnTypes(Object.fromEntries(columns.data.map(
++      (column) => [column.name, guessType(column.type)])));
++    typedDatasetId.current = active.dataset_id;
++  }, [active, columns.data, setColumnTypes]);
+ 
+   const load = useMutation({
+-    mutationFn: async () => {
+-      const path = await api.selectDataset();
+-      if (!path) return null;
+-      return api.loadDataset(path);
+-    },
+-    onMutate: () => setStatus({ message: "Importando archivo…", kind: "info" }),
++    mutationFn: async () => { const path = await api.selectDataset(); return path ? api.loadDataset(path) : null; },
++    onMutate: () => setStatus({ message: "Importando archivo…", kind: "info", sticky: true }),
+     onSuccess: async (metadata) => {
+       if (!metadata) { setStatus(null); return; }
+       setActiveDataset(metadata.dataset_id);
+-      const rows = metadata.rows_approximate ? "contando filas…" : `${metadata.rows.toLocaleString("es-ES")} filas`;
+-      setStatus({ message: `'${metadata.name}' cargado (${rows})`, kind: "success" });
+       await client.invalidateQueries({ queryKey: ["datasets"] });
++      await client.fetchQuery({ queryKey: ["preview", metadata.dataset_id, 0, 100, null],
++        queryFn: () => api.tablePage(metadata.dataset_id, 0, 100) });
++      const rows = metadata.rows === null ? "conteo en segundo plano" :
++        `${metadata.rows.toLocaleString("es-ES")} filas`;
++      setStatus({ message: `'${metadata.name}' listo (${rows})`, kind: "success" });
+     },
+     onError: (error: Error) => setStatus({ message: `No se pudo cargar: ${error.message}`, kind: "error" }),
+   });
+-
+   const close = useMutation({
+-    mutationFn: (datasetId: string) => api.closeDataset(datasetId),
+-    onMutate: () => setStatus({ message: "Cerrando dataset…", kind: "info" }),
+-    onSuccess: async () => {
+-      setActiveDataset(null);
+-      setStatus({ message: "Dataset cerrado", kind: "success" });
+-      await client.invalidateQueries({ queryKey: ["datasets"] });
+-    },
+-    onError: (error: Error) => setStatus({ message: `No se pudo cerrar: ${error.message}`, kind: "error" }),
++    mutationFn: (id: string) => api.closeDataset(id),
++    onMutate: () => setStatus({ message: "Cerrando dataset…", kind: "info", sticky: true }),
++    onSuccess: async () => { setActiveDataset(null); await client.invalidateQueries({ queryKey: ["datasets"] });
++      setStatus({ message: "Dataset cerrado", kind: "success" }); },
++    onError: (error: Error) => setStatus({ message: error.message, kind: "error" }),
+   });
+-
+   const exportDataset = useMutation({
+-    mutationFn: async () => {
+-      if (!active) throw new Error("Sin dataset activo.");
++    mutationFn: async () => { if (!active) throw new Error("Sin dataset activo.");
+       const path = await api.selectExportPath(`${active.name}.csv`, "csv");
+-      if (!path) return null;
+-      return api.exportDataset(active.dataset_id, path, "csv");
+-    },
+-    onMutate: () => setStatus({ message: "Exportando dataset…", kind: "info" }),
++      return path ? api.exportDataset(active.dataset_id, path, "csv") : null; },
++    onMutate: () => setStatus({ message: "Exportando dataset…", kind: "info", sticky: true }),
+     onSuccess: (path) => setStatus(path ? { message: "Dataset exportado", kind: "success" } : null),
+-    onError: (error: Error) => setStatus({ message: `No se pudo exportar: ${error.message}`, kind: "error" }),
+-  });
+-
+-  const applyFilters = useMutation({
+-    mutationFn: () => {
+-      if (!active || !filterColumn) throw new Error("Selecciona una columna.");
+-      return api.applyFilters(active.dataset_id, [{ column: filterColumn, values: filterValues }]);
+-    },
+-    onMutate: () => setStatus({ message: "Aplicando filtro…", kind: "info" }),
+-    onSuccess: async () => {
+-      setStatus({ message: "Filtro aplicado", kind: "success" });
+-      await client.invalidateQueries({ queryKey: ["datasets"] });
+-    },
+-    onError: (error: Error) => setStatus({ message: `No se pudo filtrar: ${error.message}`, kind: "error" }),
+-  });
+-
+-  const resetFilters = useMutation({
+-    mutationFn: () => api.resetFilters(active!.dataset_id),
+-    onMutate: () => setStatus({ message: "Restableciendo filtros…", kind: "info" }),
+-    onSuccess: async () => {
+-      setFilterValues([]);
+-      setStatus({ message: "Filtros restablecidos", kind: "success" });
+-      await client.invalidateQueries({ queryKey: ["datasets"] });
+-    },
+-    onError: (error: Error) => setStatus({ message: `No se pudo restablecer: ${error.message}`, kind: "error" }),
++    onError: (error: Error) => setStatus({ message: error.message, kind: "error" }),
+   });
+ 
+   if (datasets.isLoading) return <section><Loading label="Cargando datasets…" /></section>;
+-
+-  if (!datasets.data?.length) return <section>
+-    <header className="page-header"><div><p className="eyebrow">DATOS</p><h1>Datos</h1>
+-      <p>Carga un archivo para empezar a trabajar.</p></div></header>
+-    <div className="empty"><h2>Aún no hay datasets</h2>
+-      <p>Importa un CSV, Excel o Parquet para comenzar.</p>
+-      <button className="primary" onClick={() => load.mutate()} disabled={load.isPending}>
+-        {load.isPending ? "Importando…" : "Abrir archivo"}</button></div>
+-  </section>;
+-
+-  return <section>
+-    <header className="page-header">
+-      <div><p className="eyebrow">DATOS</p><h1>Datos</h1></div>
+-      <div className="toolbar-actions">
+-        <span className="header-hint">Explora, tipa y filtra el dataset activo.</span>
+-        <button className="quiet-button" onClick={() => setPreviewKey((key) => key + 1)}>Refrescar vista</button>
+-        <button className="quiet-button" onClick={() => { setFilterValues([]); resetFilters.mutate(); }}
+-          disabled={!active || resetFilters.isPending}>Reset filtros</button>
+-        <button className="quiet-button" onClick={() => exportDataset.mutate()} disabled={!active || exportDataset.isPending}>
+-          Exportar</button>
+-        <button className="primary" onClick={() => load.mutate()} disabled={load.isPending}>
+-          {load.isPending ? "Importando…" : "Abrir archivo"}</button>
+-      </div>
+-    </header>
+-
+-    <div className="dataset-toolbar">
+-      <div className="toolbar-actions">
+-        <button className="quiet-button" onClick={() => active && close.mutate(active.dataset_id)}
+-          disabled={!active || close.isPending}>Quitar del pool</button>
+-      </div>
+-      <div className="dataset-pool">
+-        <span className="field-label">Dataset activo</span>
+-        <select value={active?.dataset_id ?? ""} onChange={(event) => setActiveDataset(event.target.value)}>
+-          {datasets.data.map((item) => <option key={item.dataset_id} value={item.dataset_id}>
+-            {item.name} · {item.rows_approximate ? "contando…" : `${item.rows.toLocaleString("es-ES")} filas`}</option>)}
+-        </select>
+-        <span className="active-badge">● {active?.name}</span>
+-      </div>
+-    </div>
+-
+-    <div className="dataset-workspace">
+-      <div className="dataset-main">
+-        {active && <DataPreview key={`${active.dataset_id}-${previewKey}`} datasetId={active.dataset_id} totalRows={active.rows} totalRowsApproximate={active.rows_approximate} />}
+-      </div>
+-      <div className="column-panel">
+-        <article className="panel">
+-          <div className="panel-head"><div><h2>Tipos de columna</h2>
+-            <p>{columnsQuery.data?.length ?? 0} columnas</p></div>
+-            <div className="panel-actions">
+-              {columnsQuery.isLoading && <Loading label="Leyendo columnas…" inline />}
+-              <button className="quiet-button" onClick={() => {
+-                if (!columnsQuery.data) return;
+-                const next: Record<string, string> = {};
+-                for (const column of columnsQuery.data) next[column.name] = guessType(column.type);
+-                setColumnTypes(next);
+-                setStatus({ message: "Tipos detectados", kind: "info" });
+-              }}>Detectar</button>
+-            </div></div>
+-          <div className="column-list">
+-            {columnsQuery.data?.map((column) => <div key={column.name} className="column-row">
+-              <span className="column-name" title={column.name}>{column.name}</span>
+-              <select value={columnTypes[column.name] ?? guessType(column.type)}
+-                onChange={(event) => setColumnType(column.name, event.target.value)}>
+-                {TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+-              </select>
+-            </div>)}
+-          </div>
+-        </article>
+-      </div>
+-      <div className="column-panel">
+-        <article className="panel">
+-          <div className="panel-head"><div><h2>Pivotado</h2>
+-            <p>Filtra el dataset por valores de una columna.</p></div></div>
+-          <div className="filter-controls">
+-            <label className="field-label">Columna
+-              <select value={filterColumn} onChange={(event) => { setFilterColumn(event.target.value); setFilterValues([]); }}>
+-                <option value="">— Selecciona —</option>
+-                {columnsQuery.data?.map((column) => <option key={column.name} value={column.name}>{column.name}</option>)}
+-              </select></label>
+-            {filterColumn && <CheckboxList options={filterOptions} selected={filterValues}
+-              onChange={setFilterValues} emptyLabel="Sin valores de muestra." maxHeight={160} />}
+-            <div className="row-2">
+-              <button className="primary" onClick={() => applyFilters.mutate()}
+-                disabled={!filterColumn || !filterValues.length || applyFilters.isPending}>
+-                {applyFilters.isPending ? "Aplicando…" : "Aplicar"}</button>
+-              <button className="quiet-button" onClick={() => resetFilters.mutate()}
+-                disabled={!active || resetFilters.isPending}>Reset</button>
+-            </div>
+-          </div>
+-        </article>
+-      </div>
+-    </div>
+-
+-    <MergePanel datasets={datasets.data} />
+-  </section>;
+-}
+\ No newline at end of file
++  if (!datasets.data?.length) return <section><header className="page-header"><div>
++    <p className="eyebrow">DATOS</p><h1>Datos y tablas</h1><p>Carga un archivo para empezar.</p>
++    </div></header><div className="empty"><h2>Aún no hay datasets</h2>
++      <p>Importa un CSV, Excel o Parquet.</p><button className="primary"
++        onClick={() => load.mutate()} disabled={load.isPending}>Abrir archivo</button></div></section>;
++
++  return <section><header className="page-header"><div><p className="eyebrow">DATOS</p>
++    <h1>Datos y constructor de tablas</h1><p>Explora, tipa, filtra, pivota y construye sin salir de esta vista.</p></div>
++    <div className="toolbar-actions"><button className="quiet-button" onClick={() => setPreviewKey((key) => key + 1)}>Refrescar</button>
++      <button className="quiet-button" onClick={() => exportDataset.mutate()} disabled={!active || exportDataset.isPending}>Exportar</button>
++      <button className="primary" onClick={() => load.mutate()} disabled={load.isPending}>{load.isPending ? "Importando…" : "Abrir archivo"}</button></div>
++  </header>
++  <div className="dataset-toolbar"><button className="quiet-button" onClick={() => active && close.mutate(active.dataset_id)}
++    disabled={!active || close.isPending}>Quitar del pool</button><div className="dataset-pool"><span className="field-label">Dataset activo</span>
++    <select value={active?.dataset_id ?? ""} onChange={(event) => setActiveDataset(event.target.value)}>
++      {datasets.data.map((item) => <option key={item.dataset_id} value={item.dataset_id}>{item.name} · {item.rows === null ? "contando…" : `${item.rows.toLocaleString("es-ES")} filas`}</option>)}</select>
++    <span className="active-badge">● {active?.name}</span></div></div>
++  {active && <div className="unified-data-workspace">
++    <DataPreview key={`${active.dataset_id}-${previewKey}`} datasetId={active.dataset_id}
++      totalRows={active.rows} totalRowsApproximate={active.rows_approximate}
++      columnTypes={columnTypes} onColumnTypeChange={setColumnType} />
++    <article className="panel builder-panel"><TableScreen embedded /></article>
++  </div>}
++  <MergePanel datasets={datasets.data} /></section>;
++}
+diff --git a/src/features/datasets/MergePanel.tsx b/src/features/datasets/MergePanel.tsx
+index 7b3b16c..18de0c3 100644
+--- a/src/features/datasets/MergePanel.tsx
++++ b/src/features/datasets/MergePanel.tsx
+@@ -30,7 +30,7 @@ export function MergePanel({ datasets }: { datasets: DatasetMetadata[] }) {
+       name, operation, mode, keys, how,
+     }),
+     onSuccess: async (metadata) => {
+-      setNotice(`'${metadata.name}' creado con ${metadata.rows.toLocaleString("es-ES")} filas.`);
++      setNotice(`'${metadata.name}' creado con ${metadata.rows === null ? "conteo pendiente" : `${metadata.rows.toLocaleString("es-ES")} filas`}.`);
+       setSelected([]);
+       setKeys([]);
+       setName("");
+@@ -55,7 +55,7 @@ export function MergePanel({ datasets }: { datasets: DatasetMetadata[] }) {
+       <div className="merge-select">
+         <span className="merge-label">Datasets a unir</span>
+         <CheckboxList options={datasets.map((item) => ({ value: item.dataset_id,
+-          label: item.name, hint: `${item.rows.toLocaleString("es-ES")} filas` }))}
++          label: item.name, hint: item.rows === null ? "contando…" : `${item.rows.toLocaleString("es-ES")} filas` }))}
+           selected={selected} onChange={setSelected} searchable={datasets.length > 6} />
+       </div>
+       <div className="merge-options">
+@@ -90,4 +90,4 @@ export function MergePanel({ datasets }: { datasets: DatasetMetadata[] }) {
+     {notice && <div className="notice-bar" role="status">{notice}</div>}
+     {merge.error && <div className="error" role="alert">No se pudieron unir los datasets: {merge.error.message}</div>}
+   </article>;
+-}
+\ No newline at end of file
++}
+diff --git a/src/features/tables/TableScreen.test.tsx b/src/features/tables/TableScreen.test.tsx
+new file mode 100644
+index 0000000..f5d8686
+--- /dev/null
++++ b/src/features/tables/TableScreen.test.tsx
+@@ -0,0 +1,34 @@
++import { fireEvent, render, screen } from "@testing-library/react";
++import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
++import { beforeEach, expect, test, vi } from "vitest";
++import { TableScreen } from "./TableScreen";
++import { useUiStore } from "../../app/store";
++
++const mocks = vi.hoisted(() => ({
++  listDatasets: vi.fn(), columns: vi.fn(), columnValues: vi.fn(),
++  previewTable: vi.fn(), buildTable: vi.fn(), tablePage: vi.fn(),
++}));
++vi.mock("../../shared/api", () => ({ api: mocks, cancelRequest: vi.fn() }));
++
++beforeEach(() => {
++  useUiStore.setState({ activeDatasetId: "d1", columnTypes: { region: "categorica" } });
++  mocks.listDatasets.mockResolvedValue([{ dataset_id: "d1", name: "ventas",
++    backend: "pandas", rows: 2, columns: ["region"], types: ["string"],
++    uses_disk: false, source_path: null, rows_approximate: false }]);
++  mocks.columns.mockResolvedValue([{ name: "region", type: "string" }]);
++  mocks.columnValues.mockResolvedValue({ column: "region", values: ["Norte"],
++    has_more: false, next_cursor: null, version: "v1" });
++  mocks.previewTable.mockResolvedValue({ dataset_id: "d1", offset: 0, limit: 0,
++    total_rows: 0, columns: [], rows: [], approximate: false,
++    total_rows_approximate: false, has_more: false, dataset_version: "v1" });
++});
++
++test("Filtro sustituye el rol previo y permanece seleccionado", async () => {
++  render(<QueryClientProvider client={new QueryClient()}><TableScreen embedded /></QueryClientProvider>);
++  const row = await screen.findByRole("button", { name: "Fila" });
++  fireEvent.click(row);
++  const filter = screen.getByRole("button", { name: "Filtro" });
++  fireEvent.click(filter);
++  expect(screen.getByRole("button", { name: "Filtro" })).toHaveClass("active");
++  expect(screen.getByRole("button", { name: /Seleccionar valores/ })).toBeEnabled();
++});
+diff --git a/src/features/tables/TableScreen.tsx b/src/features/tables/TableScreen.tsx
+index 0a6d1f7..a756858 100644
+--- a/src/features/tables/TableScreen.tsx
++++ b/src/features/tables/TableScreen.tsx
+@@ -1,6 +1,6 @@
+-import { useEffect, useMemo, useState } from "react";
+-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+-import { api } from "../../shared/api";
++import { useEffect, useMemo, useRef, useState } from "react";
++import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
++import { api, cancelRequest } from "../../shared/api";
+ import { useUiStore } from "../../app/store";
+ import type { TableRecipe } from "../../shared/types";
+ import { DataPreview } from "../datasets/DataPreview";
+@@ -19,7 +19,7 @@ const TYPE_LABELS: Record<string, string> = {
+ type Role = "row" | "column" | "value" | "filter";
+ type ValueSpec = { col: string; agg: string; pivot: boolean };
+ 
+-export function TableScreen() {
++export function TableScreen({ embedded = false }: { embedded?: boolean }) {
+   const client = useQueryClient();
+   const { activeDatasetId, setActiveDataset, setStatus, columnTypes } = useUiStore();
+   const datasets = useQuery({ queryKey: ["datasets"], queryFn: api.listDatasets });
+@@ -28,9 +28,11 @@ export function TableScreen() {
+   const [rows, setRows] = useState<string[]>([]);
+   const [columns, setColumns] = useState<string[]>([]);
+   const [values, setValues] = useState<ValueSpec[]>([]);
+-  const [filters, setFilters] = useState<Record<string, string[]>>({});
++  const [filters, setFilters] = useState<Record<string, unknown[]>>({});
+   const [search, setSearch] = useState("");
+   const [tableId, setTableId] = useState<string | null>(null);
++  const [delayedRecipe, setDelayedRecipe] = useState<TableRecipe>({});
++  const buildRequestId = useRef<string | null>(null);
+ 
+   const columnsQuery = useQuery({
+     queryKey: ["columns", source?.dataset_id],
+@@ -55,7 +57,7 @@ export function TableScreen() {
+   const roleOf = (column: string): Role | null =>
+     rows.includes(column) ? "row" : columns.includes(column) ? "column"
+       : values.some((value) => value.col === column) ? "value"
+-      : filters[column]?.length ? "filter" : null;
++      : Object.prototype.hasOwnProperty.call(filters, column) ? "filter" : null;
+ 
+   const setRole = (column: string, role: Role | null) => {
+     setRows((current) => current.filter((item) => item !== column));
+@@ -72,30 +74,44 @@ export function TableScreen() {
+     setRows([]); setColumns([]); setValues([]); setFilters({}); setTableId(null);
+   };
+ 
++  useEffect(() => {
++    const timer = window.setTimeout(() => setDelayedRecipe(recipe), 200);
++    return () => window.clearTimeout(timer);
++  }, [recipe]);
++
+   const preview = useQuery({
+-    queryKey: ["table-preview", source?.dataset_id, JSON.stringify(recipe)],
+-    queryFn: () => api.previewTable(source!.dataset_id, recipe, 20),
++    queryKey: ["table-preview", source?.dataset_id, JSON.stringify(delayedRecipe)],
++    queryFn: ({ signal }) => api.previewTable(source!.dataset_id, delayedRecipe, 20, { signal }),
+     enabled: Boolean(source?.dataset_id) && (rows.length > 0 || columns.length > 0
+-      || values.length > 0 || Object.keys(recipe.filters ?? {}).length > 0),
++      || values.length > 0 || Object.keys(delayedRecipe.filters ?? {}).length > 0),
+     retry: false,
+   });
+ 
+   const build = useMutation({
+     mutationFn: () => {
+       if (!source) throw new Error("Selecciona un dataset.");
+-      return api.buildTable(source.dataset_id, recipe);
++      const requestId = `build-${Date.now().toString(36)}`;
++      buildRequestId.current = requestId;
++      return api.buildTable(source.dataset_id, recipe, {
++        requestId, timeoutMs: 30 * 60 * 1000,
++        onProgress: ({ message }) => setStatus({ message, kind: "info", sticky: true }),
++      });
+     },
+-    onMutate: () => setStatus({ message: "Construyendo tabla…", kind: "info" }),
++    onMutate: () => setStatus({ message: "Construyendo tabla…", kind: "info", sticky: true }),
+     onSuccess: async (id) => {
+       setTableId(id);
+       setActiveDataset(id);
+-      setStatus({ message: "Tabla construida", kind: "success" });
+       await client.invalidateQueries({ queryKey: ["datasets"] });
++      await client.fetchQuery({ queryKey: ["preview", id, 0, 100, null],
++        queryFn: () => api.tablePage(id, 0, 100) });
++      setStatus({ message: "Tabla construida y vista previa actualizada", kind: "success" });
+     },
+     onError: (error: Error) => setStatus({ message: `No se pudo construir: ${error.message}`, kind: "error" }),
+   });
+ 
+-  useEffect(() => { setTableId(null); }, [source?.dataset_id]);
++  useEffect(() => {
++    setRows([]); setColumns([]); setValues([]); setFilters({}); setTableId(null);
++  }, [source?.dataset_id]);
+ 
+   const result = datasets.data?.find((item) => item.dataset_id === tableId);
+   const visible = allColumns.filter((column) =>
+@@ -106,8 +122,8 @@ export function TableScreen() {
+     <div className="empty"><h2>Selecciona o carga un dataset</h2><p>La tabla se construye en el motor local.</p></div>
+   </section>;
+ 
+-  return <section>
+-    <header className="page-header">
++  return <section className={embedded ? "table-builder-embedded" : undefined}>
++    {!embedded && <header className="page-header">
+       <div><p className="eyebrow">PREPARACIÓN · {source?.name ?? ""}</p><h1>Constructor de tablas</h1>
+         <p>Asigna roles a las variables y observa la tabla construirse paso a paso.</p></div>
+       <div className="toolbar-actions">
+@@ -119,8 +135,17 @@ export function TableScreen() {
+         <button className="quiet-button" onClick={clearAll}>Reset</button>
+         <button className="primary" onClick={() => build.mutate()} disabled={build.isPending || !source || !values.length}>
+           {build.isPending ? "Construyendo…" : "Construir tabla"}</button>
++        {build.isPending && <button className="quiet-button" onClick={() => {
++          if (buildRequestId.current) void cancelRequest(buildRequestId.current);
++        }}>Cancelar</button>}
+       </div>
+-    </header>
++    </header>}
++    {embedded && <div className="panel-head"><div><h2>Constructor de tablas</h2>
++      <p>Asigna roles; el preview se recalcula de forma cancelable.</p></div>
++      <div className="toolbar-actions"><button className="quiet-button" onClick={clearAll}>Reset</button>
++      <button className="primary" onClick={() => build.mutate()} disabled={build.isPending || !source || !values.length}>
++        {build.isPending ? "Aplicando cambios…" : "Aplicar cambios"}</button>
++      {build.isPending && <button className="quiet-button" onClick={() => buildRequestId.current && cancelRequest(buildRequestId.current)}>Cancelar</button>}</div></div>}
+     {datasets.error && <div className="error" role="alert">No se pudieron cargar los datasets: {datasets.error.message}</div>}
+     {build.error && <div className="error" role="alert">No se pudo construir la tabla: {build.error.message}</div>}
+ 
+@@ -193,7 +218,7 @@ export function TableScreen() {
+                 {preview.data!.columns.map((column) => <td key={column}>{formatCell(row[column])}</td>)}</tr>)}</tbody></table>
+           </div>}
+         </article>
+-        {result && <DataPreview key={`${result.dataset_id}-${result.rows}`} datasetId={result.dataset_id} totalRows={result.rows} />}
++        {!embedded && result && <DataPreview key={`${result.dataset_id}-${result.rows}`} datasetId={result.dataset_id} totalRows={result.rows} />}
+       </div>
+     </div>
+   </section>;
+@@ -206,22 +231,30 @@ function formatCell(value: unknown) {
+ }
+ 
+ function FilterValues({ datasetId, column, selected, onChange }: {
+-  datasetId: string; column: string; selected: string[];
+-  onChange: (values: string[]) => void;
++  datasetId: string; column: string; selected: unknown[];
++  onChange: (values: unknown[]) => void;
+ }) {
+   const [open, setOpen] = useState(false);
+   const [search, setSearch] = useState("");
+-  const values = useQuery({
+-    queryKey: ["column-values", datasetId, column],
+-    queryFn: () => api.columnValues(datasetId, column),
++  const [debouncedSearch, setDebouncedSearch] = useState("");
++  useEffect(() => {
++    const timer = window.setTimeout(() => setDebouncedSearch(search), 250);
++    return () => window.clearTimeout(timer);
++  }, [search]);
++  const values = useInfiniteQuery({
++    queryKey: ["column-values", datasetId, column, debouncedSearch],
++    queryFn: ({ pageParam, signal }) => api.columnValues(
++      datasetId, column, debouncedSearch, 100, pageParam, { signal }),
++    initialPageParam: null as string | null,
++    getNextPageParam: (last) => last.next_cursor ?? undefined,
+     enabled: open,
+     staleTime: 5 * 60 * 1000,
+   });
+-  const options = values.data?.values ?? [];
+-  const visible = options.filter((value) =>
+-    value.toLocaleLowerCase("es").includes(search.toLocaleLowerCase("es")));
+-  const toggle = (value: string) => onChange(
+-    selected.includes(value) ? selected.filter((item) => item !== value) : [...selected, value]);
++  const options = values.data?.pages.flatMap((page) => page.values) ?? [];
++  const key = (value: unknown) => `${typeof value}:${JSON.stringify(value)}`;
++  const toggle = (value: unknown) => onChange(
++    selected.some((item) => key(item) === key(value))
++      ? selected.filter((item) => key(item) !== key(value)) : [...selected, value]);
+ 
+   return <div className="variable-extras filter-values">
+     <button type="button" className="filter-toggle" onClick={() => setOpen((current) => !current)}>
+@@ -229,24 +262,24 @@ function FilterValues({ datasetId, column, selected, onChange }: {
+       <span aria-hidden="true">{open ? "▴" : "▾"}</span>
+     </button>
+     {selected.length > 0 && <div className="filter-chips">
+-      {selected.map((value) => <button key={value} type="button" className="filter-chip"
+-        onClick={() => toggle(value)} title="Quitar">{value} ×</button>)}
++      {selected.map((value) => <button key={key(value)} type="button" className="filter-chip"
++        onClick={() => toggle(value)} title="Quitar">{formatCell(value)} ×</button>)}
+       <button type="button" className="quiet-button" onClick={() => onChange([])}>Limpiar</button>
+     </div>}
+     {open && <div className="filter-dropdown">
+       {values.isLoading && <Loading label="Leyendo valores…" inline />}
+-      {values.data?.truncated && <div className="empty-inline">
+-        Demasiados valores distintos; usa el buscador del dataset.</div>}
+-      {!values.isLoading && !values.data?.truncated && <>
++      {!values.isLoading && <>
+         <input className="checkbox-search" placeholder="Buscar valor…" value={search}
+           onChange={(event) => setSearch(event.target.value)} />
+         <div className="filter-options">
+-          {visible.length === 0 && <div className="empty-inline">Sin coincidencias.</div>}
+-          {visible.map((value) => <label key={value} className="filter-option">
+-            <input type="checkbox" checked={selected.includes(value)} onChange={() => toggle(value)} />
+-            <span title={value}>{value}</span></label>)}
++          {options.length === 0 && <div className="empty-inline">Sin coincidencias.</div>}
++          {options.map((value) => <label key={key(value)} className="filter-option">
++            <input type="checkbox" checked={selected.some((item) => key(item) === key(value))} onChange={() => toggle(value)} />
++            <span title={String(value)}>{formatCell(value)}</span></label>)}
+         </div>
++        {values.hasNextPage && <button className="quiet-button" disabled={values.isFetchingNextPage}
++          onClick={() => values.fetchNextPage()}>{values.isFetchingNextPage ? "Cargando…" : "Cargar más"}</button>}
+       </>}
+     </div>}
+   </div>;
+-}
+\ No newline at end of file
++}
+diff --git a/src/shared/api.ts b/src/shared/api.ts
+index 7a79fea..48adea1 100644
+--- a/src/shared/api.ts
++++ b/src/shared/api.ts
+@@ -22,6 +22,8 @@ export type RequestOptions = {
+   requestId?: string;
+   /** Called for every progress message the sidecar emits for this request. */
+   onProgress?: (event: ProgressEvent) => void;
++  /** Cancels the matching Python request, not only the React fetch. */
++  signal?: AbortSignal;
+ };
+ 
+ /** Error thrown for a failed sidecar request, preserving the error code. */
+@@ -46,6 +48,9 @@ async function request<T>(operation: string, params: Record<string, unknown> = {
+   options: RequestOptions = {}): Promise<T> {
+   const requestId = options.requestId ?? nextRequestId();
+   let unlisten: (() => void) | undefined;
++  const abort = () => { void cancelRequest(requestId); };
++  if (options.signal?.aborted) throw new DOMException("Operación cancelada", "AbortError");
++  options.signal?.addEventListener("abort", abort, { once: true });
+   if (options.onProgress) {
+     unlisten = await listen<ProgressEvent>("sidecar://progress", (event) => {
+       if (event.payload.id === requestId) options.onProgress?.(event.payload);
+@@ -64,6 +69,7 @@ async function request<T>(operation: string, params: Record<string, unknown> = {
+     return envelope.result;
+   } finally {
+     unlisten?.();
++    options.signal?.removeEventListener("abort", abort);
+   }
+ }
+ 
+@@ -103,9 +109,11 @@ export const api = {
+       dataset_id: datasetId, column,
+     }));
+   },
+-  columnValues: (datasetId: string, column: string, limit = 500) =>
+-    request<{ column: string; values: string[]; truncated: boolean }>(
+-      "get_column_values", { dataset_id: datasetId, column, limit }),
++  columnValues: (datasetId: string, column: string, search = "", limit = 100,
++    cursor: string | null = null, options: RequestOptions = {}) =>
++    request<{ column: string; values: unknown[]; has_more: boolean;
++      next_cursor: string | null; version: string }>(
++      "get_column_values", { dataset_id: datasetId, column, search, limit, cursor }, options),
+   async preview(datasetId: string, offset: number, limit = 100,
+     options: RequestOptions = {}): Promise<TablePage> {
+     return tablePageSchema.parse(await request("get_table_preview", {
+diff --git a/src/shared/types.ts b/src/shared/types.ts
+index 964ca60..c93771c 100644
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -4,7 +4,7 @@ export const datasetMetadataSchema = z.object({
+   dataset_id: z.string(),
+   name: z.string(),
+   backend: z.string(),
+-  rows: z.number().int().nonnegative(),
++  rows: z.number().int().nonnegative().nullable(),
+   columns: z.array(z.string()),
+   types: z.array(z.string()),
+   uses_disk: z.boolean(),
+@@ -26,11 +26,13 @@ export const tablePageSchema = z.object({
+   dataset_id: z.string(),
+   offset: z.number(),
+   limit: z.number(),
+-  total_rows: z.number(),
++  total_rows: z.number().nullable(),
+   columns: z.array(z.string()),
+   rows: z.array(z.record(z.string(), z.unknown())),
+   approximate: z.boolean().optional().default(false),
+   total_rows_approximate: z.boolean().optional().default(false),
++  has_more: z.boolean().optional().default(false),
++  dataset_version: z.string().optional().default(""),
+ });
+ export type TablePage = z.infer<typeof tablePageSchema>;
+ 
+diff --git a/src/styles.css b/src/styles.css
+index 19eb719..bcabc19 100644
+--- a/src/styles.css
++++ b/src/styles.css
+@@ -175,6 +175,11 @@ tbody tr:hover { background: var(--accent-soft); }
+ .dataset-toolbar select, .config-fields input, .config-fields select, .fields input, .fields select, .filter-controls input, .filter-controls select, .panel-head select, .pager select { min-width: 0; height: 32px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--ink); font-size: 11px; }
+ .dataset-toolbar select { min-width: 220px; }
+ .dataset-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 300px) minmax(240px, 300px); gap: 10px; align-items: stretch; flex: 1; min-height: 0; }
++.unified-data-workspace { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(360px, .75fr); gap: 12px; align-items: start; }
++.builder-panel { min-width: 0; }
++.table-builder-embedded .table-builder-grid { grid-template-columns: 1fr; }
++.table-builder-embedded .variable-list { max-height: 480px; }
++.column-type-select { display: block; max-width: 130px; margin-top: 5px; font-size: 11px; font-weight: 500; }
+ .dataset-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+ .filter-controls { display: grid; gap: 9px; padding: 12px 13px; align-content: start; overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0; }
+ .filter-controls .primary { height: 32px; align-self: end; }
+@@ -322,6 +327,7 @@ tbody tr:hover { background: var(--accent-soft); }
+   .content { overflow: auto; }
+   .content > section { display: block; }
+   .dataset-workspace { grid-template-columns: 1fr; }
++  .unified-data-workspace { grid-template-columns: 1fr; }
+   .column-list { max-height: 200px; }
+   .table-builder-grid { grid-template-columns: 1fr; }
+   .runner-grid { grid-template-columns: 1fr; }
+@@ -360,4 +366,4 @@ tbody tr:hover { background: var(--accent-soft); }
+   .row-2 { grid-template-columns: 1fr; }
+   .toolbar-actions { flex-wrap: wrap; }
+   .page-header h1 { font-size: 18px; }
+-}
+\ No newline at end of file
++}
+-- 
+2.51.1
+
