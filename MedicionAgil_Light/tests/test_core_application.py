@@ -130,7 +130,7 @@ def test_sidecar_requires_token_and_responds_to_health():
                           "operation": "health", "params": {}})
     server.run(io.StringIO(request + "\n"), output)
     response = json.loads(output.getvalue())
-    assert response == {"id": "1", "ok": True,
+    assert response == {"id": "1", "type": "response", "ok": True,
                         "result": {"status": "ok", "protocol": 1}}
 
 

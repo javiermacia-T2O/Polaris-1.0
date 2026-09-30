@@ -9,6 +9,7 @@
 - [ATTEMPTS.md](ATTEMPTS.md): soluciones probadas.
 - [DECISIONS.md](DECISIONS.md): decisiones técnicas e historial.
 - [CHECKPOINT.md](CHECKPOINT.md): punto exacto para reanudar.
+- [IPC.md](IPC.md): arquitectura y protocolo de la comunicación Tauri ↔ Python.
 
 ## Manual técnico de análisis
 

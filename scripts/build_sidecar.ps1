@@ -28,6 +28,22 @@ $arguments = @(
     '--collect-all', 'tslearn', '--hidden-import', 'causalimpact',
     '--hidden-import', 'statsmodels.api', '--hidden-import', 'sklearn.linear_model',
     '--hidden-import', 'sklearn.ensemble', '--hidden-import', 'sklearn.preprocessing',
+    # The sidecar imports the scientific application lazily (so `health` never
+    # pays for pandas). PyInstaller cannot see those deferred imports, so they
+    # are declared explicitly to keep the frozen bundle complete.
+    '--hidden-import', 'medicion_core.application',
+    '--hidden-import', 'medicion_core.jobs',
+    '--hidden-import', 'medicion_core.schemas',
+    '--hidden-import', 'medicion_core.serialization',
+    '--hidden-import', 'services.active_dataset',
+    '--hidden-import', 'services.analysis_service',
+    '--hidden-import', 'services.data_service',
+    '--hidden-import', 'services.merge_service',
+    '--hidden-import', 'services.table_service',
+    '--hidden-import', 'core.plugin_loader',
+    '--hidden-import', 'core.engine',
+    '--hidden-import', 'core.loader',
+    '--hidden-import', 'core.exporter',
     $entry
 )
 if ($Clean) { $arguments = @('-m', 'PyInstaller', '--clean') + $arguments[2..($arguments.Count - 1)] }

@@ -25,8 +25,8 @@ from .errors import (AnalysisExecutionError, AnalysisValidationError,
                      DataValidationError, ExportError, MemoryBudgetError,
                      UserInputError)
 from .jobs import JobManager
-from .schemas import (AnalysisManifest, DatasetMetadata, FilterSpec, JobStatus,
-                      ResultSummary, SortSpec, TableFormat, TablePage)
+from .schemas import (AnalysisManifest, DatasetMetadata, FilterSpec, JobState,
+                      JobStatus, ResultSummary, SortSpec, TableFormat, TablePage)
 from .serialization import frame_records, scalar_value
 
 
@@ -220,7 +220,8 @@ class MedicionApplication:
         }
 
     def get_column_values(self, dataset_id: str, column: str,
-                          limit: int = 500) -> dict[str, Any]:
+                          limit: int = 500,
+                          cancel: threading.Event | None = None) -> dict[str, Any]:
         """List the distinct values of one column for filter checkboxes.
 
         The list is bounded so a high-cardinality column never floods the UI;
@@ -231,7 +232,8 @@ class MedicionApplication:
             raise UserInputError("Columna no encontrada.",
                                  details={"column": column})
         try:
-            values = entry.active.distinct_values(column, limit=limit)
+            values = entry.active.distinct_values(column, limit=limit,
+                                                  cancel=cancel)
         except MemoryError as exc:
             raise MemoryBudgetError(str(exc)) from exc
         if values is None:
@@ -310,7 +312,8 @@ class MedicionApplication:
                            "granularity": detect_granularity(frame, column)})
         return result
 
-    def get_date_range(self, dataset_id: str, column: str) -> dict[str, Any]:
+    def get_date_range(self, dataset_id: str, column: str,
+                       cancel: threading.Event | None = None) -> dict[str, Any]:
         """Return the min/max dates and granularity for a date column."""
         from core.loader import detect_granularity
 
@@ -319,7 +322,7 @@ class MedicionApplication:
             raise UserInputError("Columna de fecha no encontrada.",
                                  details={"column": column})
         try:
-            minimum, maximum = entry.active.date_range(column)
+            minimum, maximum = entry.active.date_range(column, cancel=cancel)
         except MemoryError as exc:
             raise MemoryBudgetError(str(exc)) from exc
         except (KeyError, ValueError) as exc:
@@ -367,8 +370,8 @@ class MedicionApplication:
 
     def get_table_page(self, dataset_id: str, offset: int = 0,
                        limit: int = 200,
-                       sort: list[SortSpec | dict[str, Any]] | None = None
-                       ) -> TablePage:
+                       sort: list[SortSpec | dict[str, Any]] | None = None,
+                       cancel: threading.Event | None = None) -> TablePage:
         if limit < 1 or limit > 1000 or offset < 0:
             raise UserInputError("La página debe contener entre 1 y 1000 filas.")
         entry = self._dataset(dataset_id)
@@ -377,7 +380,8 @@ class MedicionApplication:
         try:
             frame = entry.active.page(
                 limit=limit, offset=offset,
-                sort=[(item.column, item.direction == "asc") for item in sorts])
+                sort=[(item.column, item.direction == "asc") for item in sorts],
+                cancel=cancel)
         except KeyError as exc:
             raise UserInputError("Columna de orden no encontrada.",
                                  details={"column": str(exc)}) from exc
@@ -617,7 +621,8 @@ class MedicionApplication:
             caution=_analysis_caution(analysis_id))
 
     def run_analysis(self, analysis_id: str, dataset_id: str,
-                     parameters: dict[str, Any] | None = None) -> str:
+                     parameters: dict[str, Any] | None = None,
+                     cancel: threading.Event | None = None) -> str:
         item = self._analysis(analysis_id)
         entry = self._dataset(dataset_id)
         options = dict(parameters or {})
@@ -647,7 +652,30 @@ class MedicionApplication:
                     details={"type": type(exc).__name__,
                              "reason": str(exc)}) from exc
 
-        return self.jobs.submit(f"analysis:{analysis_id}", work)
+        job_id = self.jobs.submit(f"analysis:{analysis_id}", work)
+        if cancel is not None:
+            self._bridge_cancel(job_id, cancel)
+        return job_id
+
+    def _bridge_cancel(self, job_id: str,
+                       cancel: threading.Event) -> None:
+        """Cancel a background job when its IPC request is cancelled."""
+        terminal = {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
+
+        def watch() -> None:
+            while not cancel.wait(0.05):
+                try:
+                    if self.jobs.status(job_id).state in terminal:
+                        return
+                except KeyError:
+                    return
+            try:
+                self.jobs.cancel(job_id)
+            except KeyError:
+                pass
+
+        threading.Thread(target=watch, name="medicion-cancel-bridge",
+                         daemon=True).start()
 
     def cancel_job(self, job_id: str) -> JobStatus:
         return self.jobs.cancel(job_id)
@@ -709,25 +737,30 @@ class MedicionApplication:
                 "rows": frame_records(page)}
 
     def export_result(self, result_id: str, table: str,
-                      path: str | Path, fmt: str) -> str:
+                      path: str | Path, fmt: str,
+                      cancel: threading.Event | None = None,
+                      progress: Any = None) -> str:
         from core.exporter import export_dataframe
         entry = self._result(result_id)
         value = entry.value.get(table)
         if not isinstance(value, pd.DataFrame):
             raise UserInputError("Tabla de resultado no encontrada.")
         try:
-            exported = export_dataframe(value, Path(path), fmt)
+            exported = export_dataframe(value, Path(path), fmt, cancel=cancel,
+                                        progress=progress)
             return str(exported or path)
         except (OSError, ValueError) as exc:
             raise ExportError("No se pudo exportar el resultado.",
                               details={"reason": str(exc)}) from exc
 
     def export_dataset(self, dataset_id: str, path: str | Path,
-                       fmt: str) -> str:
+                       fmt: str, cancel: threading.Event | None = None,
+                       progress: Any = None) -> str:
         """Export the active (filtered) dataset without loading it fully."""
         entry = self._dataset(dataset_id)
         try:
-            exported = entry.active.export(Path(path), fmt)
+            exported = entry.active.export(Path(path), fmt, cancel=cancel,
+                                           progress=progress)
             return str(exported or path)
         except (OSError, ValueError) as exc:
             raise ExportError("No se pudo exportar el dataset.",
@@ -736,7 +769,8 @@ class MedicionApplication:
     def merge_datasets(self, dataset_ids: list[str], name: str = "",
                        operation: str = "concat", mode: str = "all",
                        keys: list[str] | None = None,
-                       how: str = "inner") -> DatasetMetadata:
+                       how: str = "inner",
+                       cancel: threading.Event | None = None) -> DatasetMetadata:
         """Combine two or more datasets into a new pooled dataset.
 
         ``operation`` is ``concat`` (stack rows) or ``merge`` (join on keys).
@@ -750,7 +784,8 @@ class MedicionApplication:
         frames: dict[str, pd.DataFrame] = {}
         for entry in entries:
             try:
-                frames[entry.dataset_id] = entry.active.analysis_frame()
+                frames[entry.dataset_id] = entry.active.analysis_frame(
+                    cancel=cancel)
             except MemoryError as exc:
                 raise MemoryBudgetError(str(exc)) from exc
         try:
