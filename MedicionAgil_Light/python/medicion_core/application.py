@@ -45,6 +45,7 @@ class _ResultEntry:
     result_id: str
     analysis_id: str
     value: dict[str, Any]
+    resident_bytes: int = 0
 
 
 class MedicionApplication:
@@ -102,6 +103,7 @@ class MedicionApplication:
                 details={"path": str(source), "reason": str(exc)}) from exc
 
     def close_dataset(self, dataset_id: str) -> None:
+        self.jobs.cancel_owner(dataset_id)
         with self._lock:
             entry = self._datasets.pop(dataset_id, None)
             if entry is None:
@@ -139,7 +141,7 @@ class MedicionApplication:
         return rows
 
     def _row_count_or_defer(self, dataset_id: str,
-                            active: ActiveDataset) -> tuple[int, bool]:
+                            active: ActiveDataset) -> tuple[int | None, bool]:
         """Return ``(rows, approximate)`` without blocking on a huge scan.
 
         The count is a property of the source file, so a previously seen file
@@ -158,7 +160,7 @@ class MedicionApplication:
             return known, False
         if active.backend != "pandas" and active.file_size > self._ASYNC_COUNT_BYTES:
             self._schedule_row_count(dataset_id, active, token)
-            return 0, True
+            return None, True
         rows = self._row_count(dataset_id, active)
         return rows, False
 
@@ -186,7 +188,7 @@ class MedicionApplication:
                 self._row_count_pending.discard(key)
             return None
 
-        self.jobs.submit("row_count", work)
+        self.jobs.submit("row_count", work, owner_id=dataset_id)
 
     def get_dataset_metadata(self, dataset_id: str) -> DatasetMetadata:
         entry = self._dataset(dataset_id)
@@ -236,7 +238,8 @@ class MedicionApplication:
         }
 
     def get_column_values(self, dataset_id: str, column: str,
-                          limit: int = 500,
+                          limit: int = 100, search: str = "",
+                          cursor: str | None = None,
                           cancel: threading.Event | None = None) -> dict[str, Any]:
         """List the distinct values of one column for filter checkboxes.
 
@@ -248,13 +251,11 @@ class MedicionApplication:
             raise UserInputError("Columna no encontrada.",
                                  details={"column": column})
         try:
-            values = entry.active.distinct_values(column, limit=limit,
-                                                  cancel=cancel)
+            return entry.active.search_distinct_values(
+                column, search=search, limit=limit, cursor=cursor,
+                cancel=cancel)
         except MemoryError as exc:
             raise MemoryBudgetError(str(exc)) from exc
-        if values is None:
-            return {"column": column, "values": [], "truncated": True}
-        return {"column": column, "values": values, "truncated": False}
 
     def get_diagnostics(self) -> dict[str, Any]:
         from core.memory_budget import system_memory
@@ -397,18 +398,21 @@ class MedicionApplication:
             frame = entry.active.page(
                 limit=limit, offset=offset,
                 sort=[(item.column, item.direction == "asc") for item in sorts],
-                cancel=cancel)
+                cancel=cancel, lookahead=True)
         except KeyError as exc:
             raise UserInputError("Columna de orden no encontrada.",
                                  details={"column": str(exc)}) from exc
         total_rows, approximate = self._row_count_or_defer(dataset_id,
                                                            entry.active)
+        has_more = len(frame) > limit
+        frame = frame.head(limit)
         return TablePage(
             dataset_id=dataset_id, offset=offset, limit=limit,
             total_rows=total_rows,
             columns=[str(column) for column in frame.columns],
             rows=frame_records(frame),
-            total_rows_approximate=approximate)
+            total_rows_approximate=approximate, has_more=has_more,
+            dataset_version=entry.active.version_token())
 
     def preview_table(self, dataset_id: str, recipe: dict[str, Any],
                       limit: int = 20) -> TablePage:
@@ -455,7 +459,9 @@ class MedicionApplication:
             raise UserInputError("La receta de tabla no es válida.",
                                  details={"reason": str(exc)}) from exc
 
-    def build_table(self, dataset_id: str, recipe: dict[str, Any]) -> str:
+    def build_table(self, dataset_id: str, recipe: dict[str, Any],
+                    cancel: threading.Event | None = None,
+                    progress: Any = None) -> str:
         from models.table_recipe import TableRecipe
         from services.table_service import build_table_view
 
@@ -474,10 +480,15 @@ class MedicionApplication:
                     self._build_pandas_table(entry.active._frame(), table_recipe))
             else:
                 view = build_table_view(entry.active, table_recipe)
+                from services.table_result_cache import materialize_table_result
+                view = materialize_table_result(
+                    view, cancel=cancel, progress=progress)
             table_id = uuid.uuid4().hex
             with self._lock:
                 self._datasets[table_id] = _DatasetEntry(
                     table_id, f"{entry.name} · tabla", view, view, None)
+            if progress is not None:
+                progress((100, "Tabla construida y lista"))
             return table_id
         except (KeyError, ValueError) as exc:
             raise UserInputError("La receta de tabla no es válida.",
@@ -668,7 +679,8 @@ class MedicionApplication:
                     details={"type": type(exc).__name__,
                              "reason": str(exc)}) from exc
 
-        job_id = self.jobs.submit(f"analysis:{analysis_id}", work)
+        job_id = self.jobs.submit(f"analysis:{analysis_id}", work,
+                                  owner_id=dataset_id)
         if cancel is not None:
             self._bridge_cancel(job_id, cancel)
         return job_id
@@ -843,8 +855,7 @@ class MedicionApplication:
         with self._lock:
             entries = list(self._datasets.values())
         for entry in entries:
-            if entry.source_path is not None:
-                protected.append(entry.source_path)
+            protected.extend(entry.active.source_files())
         try:
             removed = int(db_engine.clear_cache(protected))
         except Exception as exc:
@@ -873,6 +884,12 @@ class MedicionApplication:
 
     def shutdown(self) -> None:
         self.jobs.shutdown(wait=True)
+        from core.resource_manager import get_manager
+        with self._lock:
+            resident = sum(entry.resident_bytes for entry in self._datasets.values())
+            resident += sum(entry.resident_bytes for entry in self._results.values())
+        if resident:
+            get_manager().note_resident(-resident)
 
     def _dataset(self, dataset_id: str) -> _DatasetEntry:
         with self._lock:

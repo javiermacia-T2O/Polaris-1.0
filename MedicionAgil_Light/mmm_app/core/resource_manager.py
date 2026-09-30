@@ -38,6 +38,8 @@ HEAVY_OPERATIONS = frozenset({
     "convert", "conversion", "join", "merge", "aggregate", "aggregation",
     "sort", "export", "materialize", "analysis", "run_analysis",
     "build_table", "materialize_table_result", "cache_as_parquet",
+    "export_dataset", "export_result", "merge_datasets", "preview_table",
+    "get_column_values", "get_date_range", "clear_cache",
 })
 
 # Máximo de consultas simultáneas y de ellas cuántas pueden ser pesadas.

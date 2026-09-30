@@ -1,9 +1,9 @@
 import { create } from "zustand";
 
-export type Screen = "datos" | "tabla" | "analisis" | "resultados" | "graficos" | "diagnostico";
+export type Screen = "datos" | "analisis" | "resultados" | "graficos" | "diagnostico";
 
 export type StatusKind = "info" | "success" | "warning" | "error";
-export type Status = { message: string; kind: StatusKind } | null;
+export type Status = { message: string; kind: StatusKind; sticky?: boolean } | null;
 
 type UiState = {
   screen: Screen;

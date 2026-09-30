@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../../shared/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, cancelRequest } from "../../shared/api";
 import { useUiStore } from "../../app/store";
 import type { TableRecipe } from "../../shared/types";
 import { DataPreview } from "../datasets/DataPreview";
@@ -19,7 +19,7 @@ const TYPE_LABELS: Record<string, string> = {
 type Role = "row" | "column" | "value" | "filter";
 type ValueSpec = { col: string; agg: string; pivot: boolean };
 
-export function TableScreen() {
+export function TableScreen({ embedded = false }: { embedded?: boolean }) {
   const client = useQueryClient();
   const { activeDatasetId, setActiveDataset, setStatus, columnTypes } = useUiStore();
   const datasets = useQuery({ queryKey: ["datasets"], queryFn: api.listDatasets });
@@ -28,9 +28,11 @@ export function TableScreen() {
   const [rows, setRows] = useState<string[]>([]);
   const [columns, setColumns] = useState<string[]>([]);
   const [values, setValues] = useState<ValueSpec[]>([]);
-  const [filters, setFilters] = useState<Record<string, string[]>>({});
+  const [filters, setFilters] = useState<Record<string, unknown[]>>({});
   const [search, setSearch] = useState("");
   const [tableId, setTableId] = useState<string | null>(null);
+  const [delayedRecipe, setDelayedRecipe] = useState<TableRecipe>({});
+  const buildRequestId = useRef<string | null>(null);
 
   const columnsQuery = useQuery({
     queryKey: ["columns", source?.dataset_id],
@@ -55,7 +57,7 @@ export function TableScreen() {
   const roleOf = (column: string): Role | null =>
     rows.includes(column) ? "row" : columns.includes(column) ? "column"
       : values.some((value) => value.col === column) ? "value"
-      : filters[column]?.length ? "filter" : null;
+      : Object.prototype.hasOwnProperty.call(filters, column) ? "filter" : null;
 
   const setRole = (column: string, role: Role | null) => {
     setRows((current) => current.filter((item) => item !== column));
@@ -72,30 +74,44 @@ export function TableScreen() {
     setRows([]); setColumns([]); setValues([]); setFilters({}); setTableId(null);
   };
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDelayedRecipe(recipe), 200);
+    return () => window.clearTimeout(timer);
+  }, [recipe]);
+
   const preview = useQuery({
-    queryKey: ["table-preview", source?.dataset_id, JSON.stringify(recipe)],
-    queryFn: () => api.previewTable(source!.dataset_id, recipe, 20),
+    queryKey: ["table-preview", source?.dataset_id, JSON.stringify(delayedRecipe)],
+    queryFn: ({ signal }) => api.previewTable(source!.dataset_id, delayedRecipe, 20, { signal }),
     enabled: Boolean(source?.dataset_id) && (rows.length > 0 || columns.length > 0
-      || values.length > 0 || Object.keys(recipe.filters ?? {}).length > 0),
+      || values.length > 0 || Object.keys(delayedRecipe.filters ?? {}).length > 0),
     retry: false,
   });
 
   const build = useMutation({
     mutationFn: () => {
       if (!source) throw new Error("Selecciona un dataset.");
-      return api.buildTable(source.dataset_id, recipe);
+      const requestId = `build-${Date.now().toString(36)}`;
+      buildRequestId.current = requestId;
+      return api.buildTable(source.dataset_id, recipe, {
+        requestId, timeoutMs: 30 * 60 * 1000,
+        onProgress: ({ message }) => setStatus({ message, kind: "info", sticky: true }),
+      });
     },
-    onMutate: () => setStatus({ message: "Construyendo tabla…", kind: "info" }),
+    onMutate: () => setStatus({ message: "Construyendo tabla…", kind: "info", sticky: true }),
     onSuccess: async (id) => {
       setTableId(id);
       setActiveDataset(id);
-      setStatus({ message: "Tabla construida", kind: "success" });
       await client.invalidateQueries({ queryKey: ["datasets"] });
+      await client.fetchQuery({ queryKey: ["preview", id, 0, 100, null],
+        queryFn: () => api.tablePage(id, 0, 100) });
+      setStatus({ message: "Tabla construida y vista previa actualizada", kind: "success" });
     },
     onError: (error: Error) => setStatus({ message: `No se pudo construir: ${error.message}`, kind: "error" }),
   });
 
-  useEffect(() => { setTableId(null); }, [source?.dataset_id]);
+  useEffect(() => {
+    setRows([]); setColumns([]); setValues([]); setFilters({}); setTableId(null);
+  }, [source?.dataset_id]);
 
   const result = datasets.data?.find((item) => item.dataset_id === tableId);
   const visible = allColumns.filter((column) =>
@@ -106,8 +122,8 @@ export function TableScreen() {
     <div className="empty"><h2>Selecciona o carga un dataset</h2><p>La tabla se construye en el motor local.</p></div>
   </section>;
 
-  return <section>
-    <header className="page-header">
+  return <section className={embedded ? "table-builder-embedded" : undefined}>
+    {!embedded && <header className="page-header">
       <div><p className="eyebrow">PREPARACIÓN · {source?.name ?? ""}</p><h1>Constructor de tablas</h1>
         <p>Asigna roles a las variables y observa la tabla construirse paso a paso.</p></div>
       <div className="toolbar-actions">
@@ -119,8 +135,17 @@ export function TableScreen() {
         <button className="quiet-button" onClick={clearAll}>Reset</button>
         <button className="primary" onClick={() => build.mutate()} disabled={build.isPending || !source || !values.length}>
           {build.isPending ? "Construyendo…" : "Construir tabla"}</button>
+        {build.isPending && <button className="quiet-button" onClick={() => {
+          if (buildRequestId.current) void cancelRequest(buildRequestId.current);
+        }}>Cancelar</button>}
       </div>
-    </header>
+    </header>}
+    {embedded && <div className="panel-head"><div><h2>Constructor de tablas</h2>
+      <p>Asigna roles; el preview se recalcula de forma cancelable.</p></div>
+      <div className="toolbar-actions"><button className="quiet-button" onClick={clearAll}>Reset</button>
+      <button className="primary" onClick={() => build.mutate()} disabled={build.isPending || !source || !values.length}>
+        {build.isPending ? "Aplicando cambios…" : "Aplicar cambios"}</button>
+      {build.isPending && <button className="quiet-button" onClick={() => buildRequestId.current && cancelRequest(buildRequestId.current)}>Cancelar</button>}</div></div>}
     {datasets.error && <div className="error" role="alert">No se pudieron cargar los datasets: {datasets.error.message}</div>}
     {build.error && <div className="error" role="alert">No se pudo construir la tabla: {build.error.message}</div>}
 
@@ -193,7 +218,7 @@ export function TableScreen() {
                 {preview.data!.columns.map((column) => <td key={column}>{formatCell(row[column])}</td>)}</tr>)}</tbody></table>
           </div>}
         </article>
-        {result && <DataPreview key={`${result.dataset_id}-${result.rows}`} datasetId={result.dataset_id} totalRows={result.rows} />}
+        {!embedded && result && <DataPreview key={`${result.dataset_id}-${result.rows}`} datasetId={result.dataset_id} totalRows={result.rows} />}
       </div>
     </div>
   </section>;
@@ -206,22 +231,30 @@ function formatCell(value: unknown) {
 }
 
 function FilterValues({ datasetId, column, selected, onChange }: {
-  datasetId: string; column: string; selected: string[];
-  onChange: (values: string[]) => void;
+  datasetId: string; column: string; selected: unknown[];
+  onChange: (values: unknown[]) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-  const values = useQuery({
-    queryKey: ["column-values", datasetId, column],
-    queryFn: () => api.columnValues(datasetId, column),
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search), 250);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+  const values = useInfiniteQuery({
+    queryKey: ["column-values", datasetId, column, debouncedSearch],
+    queryFn: ({ pageParam, signal }) => api.columnValues(
+      datasetId, column, debouncedSearch, 100, pageParam, { signal }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
     enabled: open,
     staleTime: 5 * 60 * 1000,
   });
-  const options = values.data?.values ?? [];
-  const visible = options.filter((value) =>
-    value.toLocaleLowerCase("es").includes(search.toLocaleLowerCase("es")));
-  const toggle = (value: string) => onChange(
-    selected.includes(value) ? selected.filter((item) => item !== value) : [...selected, value]);
+  const options = values.data?.pages.flatMap((page) => page.values) ?? [];
+  const key = (value: unknown) => `${typeof value}:${JSON.stringify(value)}`;
+  const toggle = (value: unknown) => onChange(
+    selected.some((item) => key(item) === key(value))
+      ? selected.filter((item) => key(item) !== key(value)) : [...selected, value]);
 
   return <div className="variable-extras filter-values">
     <button type="button" className="filter-toggle" onClick={() => setOpen((current) => !current)}>
@@ -229,23 +262,23 @@ function FilterValues({ datasetId, column, selected, onChange }: {
       <span aria-hidden="true">{open ? "▴" : "▾"}</span>
     </button>
     {selected.length > 0 && <div className="filter-chips">
-      {selected.map((value) => <button key={value} type="button" className="filter-chip"
-        onClick={() => toggle(value)} title="Quitar">{value} ×</button>)}
+      {selected.map((value) => <button key={key(value)} type="button" className="filter-chip"
+        onClick={() => toggle(value)} title="Quitar">{formatCell(value)} ×</button>)}
       <button type="button" className="quiet-button" onClick={() => onChange([])}>Limpiar</button>
     </div>}
     {open && <div className="filter-dropdown">
       {values.isLoading && <Loading label="Leyendo valores…" inline />}
-      {values.data?.truncated && <div className="empty-inline">
-        Demasiados valores distintos; usa el buscador del dataset.</div>}
-      {!values.isLoading && !values.data?.truncated && <>
+      {!values.isLoading && <>
         <input className="checkbox-search" placeholder="Buscar valor…" value={search}
           onChange={(event) => setSearch(event.target.value)} />
         <div className="filter-options">
-          {visible.length === 0 && <div className="empty-inline">Sin coincidencias.</div>}
-          {visible.map((value) => <label key={value} className="filter-option">
-            <input type="checkbox" checked={selected.includes(value)} onChange={() => toggle(value)} />
-            <span title={value}>{value}</span></label>)}
+          {options.length === 0 && <div className="empty-inline">Sin coincidencias.</div>}
+          {options.map((value) => <label key={key(value)} className="filter-option">
+            <input type="checkbox" checked={selected.some((item) => key(item) === key(value))} onChange={() => toggle(value)} />
+            <span title={String(value)}>{formatCell(value)}</span></label>)}
         </div>
+        {values.hasNextPage && <button className="quiet-button" disabled={values.isFetchingNextPage}
+          onClick={() => values.fetchNextPage()}>{values.isFetchingNextPage ? "Cargando…" : "Cargar más"}</button>}
       </>}
     </div>}
   </div>;

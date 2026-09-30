@@ -16,7 +16,7 @@ class DatasetMetadata(ApiModel):
     dataset_id: str
     name: str
     backend: str
-    rows: int
+    rows: int | None
     columns: list[str]
     types: list[str]
     uses_disk: bool
@@ -41,13 +41,15 @@ class TablePage(ApiModel):
     dataset_id: str
     offset: int
     limit: int
-    total_rows: int
+    total_rows: int | None
     columns: list[str]
     rows: list[dict[str, Any]]
     approximate: bool = False
     # True while ``total_rows`` is provisional (a huge source is still being
     # counted in the background); the UI polls until the exact total arrives.
     total_rows_approximate: bool = False
+    has_more: bool = False
+    dataset_version: str = ""
 
 
 class AnalysisManifest(ApiModel):

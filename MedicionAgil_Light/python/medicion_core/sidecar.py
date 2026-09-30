@@ -395,14 +395,6 @@ class SidecarServer:
         # they must answer even when every connection is busy with a heavy
         # query, so they never wait on a reservation.
         operation = str(request.get("operation") or "")
-        if operation not in _CONTROL_OPERATIONS:
-            try:
-                from core import engine as db_engine
-
-                registry.attach_conn(request_id, db_engine.get_conn())
-            except Exception:
-                pass
-
         def progress(value: Any) -> None:
             percent, message = _progress_parts(value)
             writer.send({"id": request_id, "type": "progress",
@@ -410,8 +402,21 @@ class SidecarServer:
 
         started = time.perf_counter()
         try:
-            response = self.handle(request, cancel=pending.cancel,
-                                   progress=progress, request_id=request_id)
+            if operation in _CONTROL_OPERATIONS:
+                response = self.handle(request, cancel=pending.cancel,
+                                       progress=progress, request_id=request_id)
+            else:
+                from core import engine as db_engine
+                from core.resource_manager import HEAVY_OPERATIONS, get_manager
+                params = request.get("params") or {}
+                heavy = operation in HEAVY_OPERATIONS or (
+                    operation == "get_table_page" and bool(params.get("sort")))
+                with get_manager().reserve(
+                        "heavy" if heavy else "light", cancel=pending.cancel):
+                    conn = db_engine.get_conn(cancel=pending.cancel)
+                    registry.attach_conn(request_id, conn)
+                    response = self.handle(request, cancel=pending.cancel,
+                                           progress=progress, request_id=request_id)
         except Exception as exc:  # pragma: no cover - defensive
             response = {"id": request_id, "type": "response", "ok": False,
                         "error": SidecarError(

@@ -4,7 +4,7 @@ export const datasetMetadataSchema = z.object({
   dataset_id: z.string(),
   name: z.string(),
   backend: z.string(),
-  rows: z.number().int().nonnegative(),
+  rows: z.number().int().nonnegative().nullable(),
   columns: z.array(z.string()),
   types: z.array(z.string()),
   uses_disk: z.boolean(),
@@ -26,11 +26,13 @@ export const tablePageSchema = z.object({
   dataset_id: z.string(),
   offset: z.number(),
   limit: z.number(),
-  total_rows: z.number(),
+  total_rows: z.number().nullable(),
   columns: z.array(z.string()),
   rows: z.array(z.record(z.string(), z.unknown())),
   approximate: z.boolean().optional().default(false),
   total_rows_approximate: z.boolean().optional().default(false),
+  has_more: z.boolean().optional().default(false),
+  dataset_version: z.string().optional().default(""),
 });
 export type TablePage = z.infer<typeof tablePageSchema>;
 

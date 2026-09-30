@@ -24,9 +24,12 @@ class _Job:
     status: JobStatus
     cancel: threading.Event = field(default_factory=threading.Event)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    owner_id: str | None = None
+    thread_ident: int | None = None
 
 
 class JobManager:
+    MAX_TERMINAL_HISTORY = 100
     def __init__(self, max_workers: int = 2):
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="medicion-job")
@@ -34,10 +37,12 @@ class JobManager:
         self._lock = threading.Lock()
 
     def submit(self, job_type: str,
-               work: Callable[[threading.Event, Callable], str | None]) -> str:
+               work: Callable[[threading.Event, Callable], str | None], *,
+               owner_id: str | None = None) -> str:
         job_id = uuid.uuid4().hex
         job = _Job(JobStatus(job_id=job_id, type=job_type,
-                             state=JobState.QUEUED, created_at=_now()))
+                             state=JobState.QUEUED, created_at=_now()),
+                   owner_id=owner_id)
         with self._lock:
             self._jobs[job_id] = job
 
@@ -56,6 +61,7 @@ class JobManager:
                     return
                 job.status.state = JobState.RUNNING
                 job.status.started_at = _now()
+                job.thread_ident = threading.get_ident()
             try:
                 result_id = work(job.cancel, progress)
                 with job.lock:
@@ -82,6 +88,14 @@ class JobManager:
             finally:
                 with job.lock:
                     job.status.finished_at = _now()
+                    job.thread_ident = None
+                try:
+                    from core import engine as db_engine
+                    db_engine.release_conn()
+                except Exception:
+                    pass
+                with self._lock:
+                    self._prune_locked()
 
         self._executor.submit(run)
         return job_id
@@ -95,10 +109,26 @@ class JobManager:
         job = self._get(job_id)
         job.cancel.set()
         with job.lock:
+            ident = job.thread_ident
             if job.status.state == JobState.QUEUED:
                 job.status.state = JobState.CANCELLED
                 job.status.finished_at = _now()
-            return job.status.model_copy(deep=True)
+            status = job.status.model_copy(deep=True)
+        if ident is not None:
+            try:
+                from core import engine as db_engine
+                db_engine.interrupt_thread(ident)
+            except Exception:
+                pass
+        return status
+
+    def cancel_owner(self, owner_id: str) -> int:
+        with self._lock:
+            ids = [job_id for job_id, job in self._jobs.items()
+                   if job.owner_id == owner_id]
+        for job_id in ids:
+            self.cancel(job_id)
+        return len(ids)
 
     def list(self) -> list[JobStatus]:
         with self._lock:
@@ -107,9 +137,9 @@ class JobManager:
 
     def shutdown(self, wait: bool = True) -> None:
         with self._lock:
-            jobs = list(self._jobs.values())
-        for job in jobs:
-            job.cancel.set()
+            ids = list(self._jobs)
+        for job_id in ids:
+            self.cancel(job_id)
         self._executor.shutdown(wait=wait, cancel_futures=True)
 
     def _get(self, job_id: str) -> _Job:
@@ -118,6 +148,15 @@ class JobManager:
         if job is None:
             raise KeyError(f"Job no encontrado: {job_id}")
         return job
+
+    def _prune_locked(self) -> None:
+        terminal = {JobState.COMPLETED, JobState.FAILED, JobState.CANCELLED}
+        finished = [(job_id, job.status.finished_at or "")
+                    for job_id, job in self._jobs.items()
+                    if job.status.state in terminal]
+        for job_id, _ in sorted(finished, key=lambda item: item[1])[
+                :-self.MAX_TERMINAL_HISTORY]:
+            self._jobs.pop(job_id, None)
 
 
 def _progress_parts(value: Any) -> tuple[int, str]:

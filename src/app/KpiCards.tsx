@@ -17,7 +17,7 @@ export function KpiCards() {
   const categorical = Math.max(0, (active?.columns.length ?? 0) - numeric);
 
   const specs = [
-    { label: "Filas", value: active ? active.rows.toLocaleString("es-ES") : "—", tone: "primary" },
+    { label: "Filas", value: active?.rows === null ? "Contando…" : active ? active.rows.toLocaleString("es-ES") : "—", tone: "primary" },
     { label: "Columnas", value: active ? active.columns.length : "—", tone: "purple" },
     { label: "Numéricas", value: active ? numeric : "—", tone: "success" },
     { label: "Categóricas", value: active ? categorical : "—", tone: "warning" },

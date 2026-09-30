@@ -186,12 +186,12 @@ def _configure_conn(conn):
     # suelo completo: comparar contra 128 MiB rechazaba la lectura desde disco
     # incluso para archivos pequeños cuando la RAM libre era baja. DuckDB
     # admite límites pequeños y desborda a temp_directory.
-    memory_limit_mb = _memory.duckdb_limit_bytes() // (2 * 1024**2)
-    if memory_limit_mb < 256:
-        memory_limit_mb = 256
+    from core.resource_manager import MIB, get_manager
+    profile = get_manager().profile
+    memory_limit_mb = max(128, profile.light_bytes // MIB)
     try:
         print(f"[engine] DuckDB memory_limit={memory_limit_mb} MiB")
-        conn.execute(f"PRAGMA threads={min(N_THREADS, 4)}")
+        conn.execute(f"PRAGMA threads={profile.threads}")
         conn.execute(f"PRAGMA memory_limit='{memory_limit_mb}MB'")
         conn.execute(f"PRAGMA temp_directory='{CACHE_DIR.as_posix()}'")
         conn.execute("PRAGMA enable_progress_bar=false")
@@ -232,7 +232,7 @@ def _pool():
     return _POOL
 
 
-def get_conn():
+def get_conn(cancel=None, timeout: float | None = None):
     """Conexión DuckDB exclusiva del hilo actual, prestada por el pool.
 
     El préstamo dura toda la consulta y el consumo del reader; se libera con
@@ -243,7 +243,7 @@ def get_conn():
         raise RuntimeError(
             "DuckDB no está instalado. Ejecuta: pip install duckdb"
         )
-    conn = _pool().acquire()
+    conn = _pool().acquire(cancel=cancel, timeout=timeout)
     _apply_views(conn)
     return conn
 
@@ -1024,4 +1024,3 @@ def cache_size_mb() -> float:
         except Exception:
             pass
     return total / 1024**2
-

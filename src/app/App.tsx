@@ -4,7 +4,6 @@ import { AnalysisProvider, useAnalysis } from "./AnalysisContext";
 import { Sidebar } from "./Sidebar";
 import { KpiCards } from "./KpiCards";
 import { DatasetsScreen } from "../features/datasets/DatasetsScreen";
-import { TableScreen } from "../features/tables/TableScreen";
 import { AnalysesScreen } from "../features/analyses/AnalysesScreen";
 import { ResultsScreen } from "../features/results/ResultsScreen";
 import { ChartsScreen } from "../features/results/ChartsScreen";
@@ -13,7 +12,6 @@ import { ProgressModal } from "../shared/ProgressModal";
 
 const tabs: Array<{ id: Screen; label: string }> = [
   { id: "datos", label: "Datos" },
-  { id: "tabla", label: "Constructor de tablas" },
   { id: "analisis", label: "Análisis" },
   { id: "resultados", label: "Resultados" },
   { id: "graficos", label: "Gráficos" },
@@ -29,7 +27,7 @@ function Shell() {
   const { selected, job, modalOpen, setModalOpen, cancel, openResults } = useAnalysis();
 
   useEffect(() => {
-    if (!status) return;
+    if (!status || status.sticky) return;
     const timer = window.setTimeout(() => setStatus(null), 4000);
     return () => window.clearTimeout(timer);
   }, [status, setStatus]);
@@ -52,7 +50,6 @@ function Shell() {
       </nav>
       <main className="content">
         {screen === "datos" && <DatasetsScreen />}
-        {screen === "tabla" && <TableScreen />}
         {screen === "analisis" && <AnalysesScreen />}
         {screen === "resultados" && <ResultsScreen />}
         {screen === "graficos" && <ChartsScreen />}

@@ -59,12 +59,14 @@ export function Sidebar() {
       const path = await api.selectDataset();
       return path ? api.loadDataset(path) : null;
     },
-    onMutate: () => setStatus({ message: "Abriendo archivo…", kind: "info" }),
+    onMutate: () => setStatus({ message: "Abriendo archivo…", kind: "info", sticky: true }),
     onSuccess: async (data) => {
       if (!data) { setStatus(null); return; }
       setActiveDataset(data.dataset_id);
-      setStatus({ message: `'${data.name}' cargado · ${data.rows.toLocaleString("es-ES")} filas`, kind: "success" });
       await client.invalidateQueries({ queryKey: ["datasets"] });
+      await client.fetchQuery({ queryKey: ["preview", data.dataset_id, 0, 100, null],
+        queryFn: () => api.tablePage(data.dataset_id, 0, 100) });
+      setStatus({ message: `'${data.name}' listo · ${data.rows === null ? "contando filas…" : `${data.rows.toLocaleString("es-ES")} filas`}`, kind: "success" });
     },
     onError: (error: Error) => setStatus({ message: `No se pudo abrir el archivo: ${error.message}`, kind: "error" }),
   });

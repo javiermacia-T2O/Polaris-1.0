@@ -30,7 +30,7 @@ export function MergePanel({ datasets }: { datasets: DatasetMetadata[] }) {
       name, operation, mode, keys, how,
     }),
     onSuccess: async (metadata) => {
-      setNotice(`'${metadata.name}' creado con ${metadata.rows.toLocaleString("es-ES")} filas.`);
+      setNotice(`'${metadata.name}' creado con ${metadata.rows === null ? "conteo pendiente" : `${metadata.rows.toLocaleString("es-ES")} filas`}.`);
       setSelected([]);
       setKeys([]);
       setName("");
@@ -55,7 +55,7 @@ export function MergePanel({ datasets }: { datasets: DatasetMetadata[] }) {
       <div className="merge-select">
         <span className="merge-label">Datasets a unir</span>
         <CheckboxList options={datasets.map((item) => ({ value: item.dataset_id,
-          label: item.name, hint: `${item.rows.toLocaleString("es-ES")} filas` }))}
+          label: item.name, hint: item.rows === null ? "contando…" : `${item.rows.toLocaleString("es-ES")} filas` }))}
           selected={selected} onChange={setSelected} searchable={datasets.length > 6} />
       </div>
       <div className="merge-options">

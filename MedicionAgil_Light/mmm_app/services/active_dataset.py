@@ -1,7 +1,9 @@
 """A logical dataset that can stay on disk instead of becoming a DataFrame."""
 
 from dataclasses import dataclass, replace
+import base64
 import hashlib
+import json
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,7 @@ def _ident(name: str) -> str:
 
 
 _STATS_CACHE = OrderedDict()
+_ROW_ID_BASE = "__polaris_rowid__"
 
 
 def _is_memory_error(exc: BaseException) -> bool:
@@ -49,7 +52,9 @@ class ActiveDataset:
     origin_mtime_ns: int = 0
     source_params: tuple[Any, ...] = ()
     parent: "ActiveDataset | None" = None
+    dependencies: tuple["ActiveDataset", ...] = ()
     version_hint: str | None = None
+    row_id_column: str | None = None
 
     @classmethod
     def open_file(cls, path: Path) -> "ActiveDataset":
@@ -76,9 +81,13 @@ class ActiveDataset:
                     "desde disco. Cierra otras aplicaciones y vuelve a "
                     "intentarlo; el dataset no se ha cargado parcialmente.") from exc
             raise
-        return replace(probe,
-                       columns=tuple(str(row[0]) for row in rows),
-                       types=tuple(str(row[1]) for row in rows))
+        columns = tuple(str(row[0]) for row in rows)
+        hidden = _ROW_ID_BASE
+        while hidden in columns:
+            hidden = "_" + hidden
+        return replace(probe, columns=columns,
+                       types=tuple(str(row[1]) for row in rows),
+                       row_id_column=hidden)
 
     @classmethod
     def from_frame(cls, frame: pd.DataFrame) -> "ActiveDataset":
@@ -86,15 +95,19 @@ class ActiveDataset:
                    tuple(str(dtype) for dtype in frame.dtypes))
 
     @classmethod
-    def from_query(cls, sql: str, params: tuple, parent: "ActiveDataset",
-                   version_hint: str) -> "ActiveDataset":
-        parent._check_source()
+    def from_query(cls, sql: str, params: tuple,
+                   parent: "ActiveDataset | None", version_hint: str,
+                   dependencies: tuple["ActiveDataset", ...] = ()) -> "ActiveDataset":
+        deps = tuple(dependencies) or ((parent,) if parent is not None else ())
+        for dependency in deps:
+            dependency._check_source()
         cursor = engine.get_conn().execute(
             f"SELECT * FROM ({sql}) AS _table_result LIMIT 0", params)
         description = cursor.description
         return cls(sql, "query", tuple(str(item[0]) for item in description),
                    tuple(str(item[1]) for item in description),
                    source_params=tuple(params), parent=parent,
+                   dependencies=deps,
                    version_hint=version_hint)
 
     def version_token(self) -> str:
@@ -103,11 +116,13 @@ class ActiveDataset:
         elif self.backend == "registered":
             identity = (self.version_hint or self.source, self.columns, self.types)
         elif self.backend == "query":
-            identity = (self.version_hint, self.parent.version_token(),
+            identity = (self.version_hint,
+                        tuple(item.version_token() for item in self.dependencies),
                         self.source_params)
         else:
             identity = (str(self.source), self.file_size, self.file_mtime_ns,
-                        str(self.origin), self.origin_size, self.origin_mtime_ns)
+                        str(self.origin), self.origin_size, self.origin_mtime_ns,
+                        self.row_id_column)
         state = (identity, self.filters, self.projection, self.date_bounds)
         return hashlib.sha256(repr(state).encode("utf-8")).hexdigest()
 
@@ -140,13 +155,18 @@ class ActiveDataset:
         if self.backend == "query":
             return f"({self.source})"
         path = str(self.source).replace("'", "''")
-        if self.backend == "parquet":
-            return f"read_parquet('{path}')"
-        return f"read_csv_auto('{path}', sample_size=20480, ignore_errors=false)"
+        source = (f"read_parquet('{path}')" if self.backend == "parquet" else
+                  f"read_csv_auto('{path}', sample_size=20480, ignore_errors=false)")
+        if self.row_id_column:
+            return (f"(SELECT * EXCLUDE (ordinality), ordinality AS "
+                    f"{_ident(self.row_id_column)} FROM {source} WITH ORDINALITY) "
+                    "AS _polaris_source")
+        return source
 
     def _check_source(self) -> None:
         if self.backend == "query":
-            self.parent._check_source()
+            for dependency in self.dependencies:
+                dependency._check_source()
             return
         if self.backend in {"pandas", "registered"}:
             return
@@ -158,6 +178,16 @@ class ActiveDataset:
             if (original.st_size != self.origin_size or
                     original.st_mtime_ns != self.origin_mtime_ns):
                 raise RuntimeError("El archivo de origen cambió; vuelve a cargarlo")
+
+    def source_files(self) -> tuple[Path, ...]:
+        if self.backend == "query":
+            paths: list[Path] = []
+            for dependency in self.dependencies:
+                paths.extend(dependency.source_files())
+            return tuple(dict.fromkeys(paths))
+        if self.backend in {"parquet", "duckdb_csv"}:
+            return (Path(self.source).resolve(),)
+        return ()
 
     def cache_as_parquet(self, cancel=None, progress=None) -> Path:
         """Stream CSV/TSV to a validated Parquet cache, with atomic writes."""
@@ -172,7 +202,17 @@ class ActiveDataset:
         if free < source.stat().st_size * 2:
             raise OSError("Espacio insuficiente para convertir CSV a Parquet")
         before = engine._source_metadata(source)
-        self.export(cache, "parquet", cancel, progress)
+        # DuckDB may parallelise a CSV scan and emit batches in a different
+        # order.  A cache is an implementation detail and must not make the
+        # same preview jump between rows, so force a single reader here.
+        conn = engine.get_conn(cancel=cancel)
+        previous_threads = conn.execute(
+            "SELECT current_setting('threads')").fetchone()[0]
+        try:
+            conn.execute("SET threads=1")
+            self.export(cache, "parquet", cancel, progress)
+        finally:
+            conn.execute(f"SET threads={int(previous_threads)}")
         if engine._source_metadata(source) != before:
             cache.unlink(missing_ok=True)
             raise RuntimeError("El origen cambió durante la conversión")
@@ -211,8 +251,15 @@ class ActiveDataset:
             if not values:
                 clauses.append("FALSE")
             else:
-                clauses.append(f"{_ident(column)} IN ({','.join('?' for _ in values)})")
-                params.extend(values)
+                concrete = [value for value in values if value is not None]
+                alternatives = []
+                if concrete:
+                    alternatives.append(
+                        f"{_ident(column)} IN ({','.join('?' for _ in concrete)})")
+                    params.extend(concrete)
+                if any(value is None for value in values):
+                    alternatives.append(f"{_ident(column)} IS NULL")
+                clauses.append("(" + " OR ".join(alternatives) + ")")
         if self.date_bounds:
             column, start, end = self.date_bounds
             date_sql = f"TRY_CAST({_ident(column)} AS DATE)"
@@ -289,7 +336,7 @@ class ActiveDataset:
         return self.page(limit=limit, offset=offset, cancel=cancel)
 
     def page(self, limit: int = 200, offset: int = 0, sort=None,
-             cancel=None) -> pd.DataFrame:
+             cancel=None, lookahead: bool = False) -> pd.DataFrame:
         """Return one bounded page, optionally sorted by known columns."""
         if not 0 <= limit <= 1000 or offset < 0:
             raise ValueError("Preview limitado a 1000 filas por página")
@@ -309,7 +356,8 @@ class ActiveDataset:
                     [column for column, _ in sort],
                     ascending=[ascending for _, ascending in sort],
                     kind="mergesort")
-            return frame.iloc[offset:offset + limit]
+            extra = 1 if lookahead else 0
+            return frame.iloc[offset:offset + limit + extra]
         self._check_source()
         if not selected:
             return pd.DataFrame()
@@ -317,12 +365,30 @@ class ActiveDataset:
         sql = (f"SELECT {', '.join(_ident(c) for c in selected)} "
                f"FROM {self._source_sql()}{where}")
         if sort:
+            order = list(sort)
+            if self.row_id_column and self.row_id_column not in {
+                    column for column, _ in order}:
+                order.append((self.row_id_column, True))
             sql += " ORDER BY " + ", ".join(
                 f"{_ident(column)} {'ASC' if ascending else 'DESC'}"
-                for column, ascending in sort)
-        sql += f" LIMIT {limit} OFFSET {offset}"
+                for column, ascending in order)
+        fetch_limit = limit + (1 if lookahead else 0)
+        sql += f" LIMIT {fetch_limit} OFFSET {offset}"
         started = time.perf_counter()
-        result = engine.get_conn().execute(sql, self._params(params)).fetchdf()
+        conn = engine.get_conn(cancel=cancel)
+        previous_threads = None
+        # Physical order is the only cheap order for a multi-GB CSV.  DuckDB's
+        # parallel CSV scanner can interleave chunks, so use one thread only
+        # for an unsorted page.  Explicit sorts may use all configured threads.
+        if not sort and self.backend in {"duckdb_csv", "parquet"}:
+            previous_threads = conn.execute(
+                "SELECT current_setting('threads')").fetchone()[0]
+            conn.execute("SET threads=1")
+        try:
+            result = conn.execute(sql, self._params(params)).fetchdf()
+        finally:
+            if previous_threads is not None:
+                conn.execute(f"SET threads={int(previous_threads)}")
         if debug_enabled():
             log_debug("QUERY", "preview", backend=self.backend,
                       version=self.version_token()[:12],
@@ -530,8 +596,12 @@ class ActiveDataset:
 
         path = Path(path)
         with get_manager().reserve("heavy", cancel=cancel):
-            reader = engine.get_conn().execute(
-                sql, self._params(params)).to_arrow_reader(100_000)
+            conn = engine.get_conn(cancel=cancel)
+            # Keep every Arrow batch comfortably bounded even with wide text
+            # columns.  The row estimate is refined after the first batch.
+            batch_rows = 16_384
+            reader = conn.execute(
+                sql, self._params(params)).to_arrow_reader(batch_rows)
             with atomic_output(path) as temporary:
                 with temporary.open("wb") as stream:
                     if fmt == "parquet":
@@ -544,6 +614,10 @@ class ActiveDataset:
                         for batch in reader:
                             if cancel is not None and cancel.is_set():
                                 raise TaskCancelled()
+                            if batch.nbytes > 256 * 1024 * 1024:
+                                raise MemoryError(
+                                    "Un bloque de exportación supera 256 MiB; "
+                                    "reduce el ancho de las columnas activas.")
                             writer.write_batch(batch)
                             written += batch.num_rows
                             if progress is not None:
@@ -667,6 +741,73 @@ class ActiveDataset:
         if len(rows) > limit:
             return None
         return sorted(str(row[0]) for row in rows)
+
+    def search_distinct_values(self, column: str, search: str = "",
+                               limit: int = 100, cursor: str | None = None,
+                               cancel=None) -> dict[str, Any]:
+        """Return one deterministic, typed page of distinct filter values.
+
+        The opaque cursor is tied to the current dataset version, column and
+        search text.  It intentionally contains only an offset: bounded pages
+        keep IPC small while DuckDB performs the distinct/order operation.
+        """
+        if column not in self.columns:
+            raise KeyError(column)
+        if not 1 <= limit <= 100:
+            raise ValueError("El límite debe estar entre 1 y 100")
+        version = self.version_token()
+        offset = 0
+        if cursor:
+            try:
+                payload = json.loads(base64.urlsafe_b64decode(
+                    cursor.encode("ascii") + b"=" * (-len(cursor) % 4)))
+            except Exception as exc:
+                raise ValueError("Cursor de valores no válido") from exc
+            if (payload.get("v") != version or payload.get("c") != column
+                    or payload.get("q") != search):
+                raise ValueError("El cursor ya no pertenece a esta vista")
+            offset = int(payload.get("o", 0))
+        if cancel is not None and cancel.is_set():
+            raise TaskCancelled()
+
+        if self.backend == "pandas":
+            series = self._frame()[column]
+            values = list(series.drop_duplicates())
+            if search:
+                needle = search.casefold()
+                values = [value for value in values if value is not None
+                          and needle in str(value).casefold()]
+            values.sort(key=lambda value: (value is not None,
+                                           type(value).__name__, str(value)))
+            page = values[offset:offset + limit + 1]
+        else:
+            self._check_source()
+            where, params = self._where()
+            quoted = _ident(column)
+            search_clause = ""
+            if search:
+                search_clause = (" AND " if where else " WHERE ") + \
+                    f"CAST({quoted} AS VARCHAR) ILIKE ?"
+                params.append(f"%{search}%")
+            sql = (f"SELECT DISTINCT {quoted} AS value "
+                   f"FROM {self._source_sql()}{where}{search_clause} "
+                   "ORDER BY value IS NOT NULL, typeof(value), "
+                   f"CAST(value AS VARCHAR) LIMIT {limit + 1} OFFSET {offset}")
+            page = [row[0] for row in engine.get_conn(cancel=cancel).execute(
+                sql, self._params(params)).fetchall()]
+        has_more = len(page) > limit
+        page = page[:limit]
+        next_cursor = None
+        if has_more:
+            raw = json.dumps({"v": version, "c": column, "q": search,
+                              "o": offset + limit}, separators=(",", ":"))
+            next_cursor = base64.urlsafe_b64encode(
+                raw.encode("utf-8")).decode("ascii").rstrip("=")
+        from medicion_core.serialization import scalar_value
+        return {"column": column,
+                "values": [scalar_value(value) for value in page],
+                "has_more": has_more, "next_cursor": next_cursor,
+                "version": version}
 
 
 @dataclass(frozen=True)

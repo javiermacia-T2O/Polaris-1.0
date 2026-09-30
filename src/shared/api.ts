@@ -22,6 +22,8 @@ export type RequestOptions = {
   requestId?: string;
   /** Called for every progress message the sidecar emits for this request. */
   onProgress?: (event: ProgressEvent) => void;
+  /** Cancels the matching Python request, not only the React fetch. */
+  signal?: AbortSignal;
 };
 
 /** Error thrown for a failed sidecar request, preserving the error code. */
@@ -46,6 +48,9 @@ async function request<T>(operation: string, params: Record<string, unknown> = {
   options: RequestOptions = {}): Promise<T> {
   const requestId = options.requestId ?? nextRequestId();
   let unlisten: (() => void) | undefined;
+  const abort = () => { void cancelRequest(requestId); };
+  if (options.signal?.aborted) throw new DOMException("Operación cancelada", "AbortError");
+  options.signal?.addEventListener("abort", abort, { once: true });
   if (options.onProgress) {
     unlisten = await listen<ProgressEvent>("sidecar://progress", (event) => {
       if (event.payload.id === requestId) options.onProgress?.(event.payload);
@@ -64,6 +69,7 @@ async function request<T>(operation: string, params: Record<string, unknown> = {
     return envelope.result;
   } finally {
     unlisten?.();
+    options.signal?.removeEventListener("abort", abort);
   }
 }
 
@@ -103,9 +109,11 @@ export const api = {
       dataset_id: datasetId, column,
     }));
   },
-  columnValues: (datasetId: string, column: string, limit = 500) =>
-    request<{ column: string; values: string[]; truncated: boolean }>(
-      "get_column_values", { dataset_id: datasetId, column, limit }),
+  columnValues: (datasetId: string, column: string, search = "", limit = 100,
+    cursor: string | null = null, options: RequestOptions = {}) =>
+    request<{ column: string; values: unknown[]; has_more: boolean;
+      next_cursor: string | null; version: string }>(
+      "get_column_values", { dataset_id: datasetId, column, search, limit, cursor }, options),
   async preview(datasetId: string, offset: number, limit = 100,
     options: RequestOptions = {}): Promise<TablePage> {
     return tablePageSchema.parse(await request("get_table_preview", {
