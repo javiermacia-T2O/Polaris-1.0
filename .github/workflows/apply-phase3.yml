@@ -1,0 +1,28 @@
+name: Apply Phase 3 patches
+
+on:
+  push:
+    branches: [codex/fase3-complete]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply committed patches
+        shell: bash
+        run: |
+          shopt -s nullglob
+          patches=(phase3-*.patch)
+          if [ ${#patches[@]} -eq 0 ]; then exit 0; fi
+          git config user.name 'Codex'
+          git config user.email 'codex@users.noreply.github.com'
+          git am "${patches[@]}"
+          git rm "${patches[@]}" .github/workflows/apply-phase3.yml
+          git commit -m 'chore: retirar aplicador temporal de Fase 3'
+          git push origin HEAD:codex/fase3-complete
