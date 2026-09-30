@@ -101,11 +101,12 @@ def _progress_parts(value: Any) -> tuple[int, str]:
 class _PendingRequest:
     """Cancellation handle for one in-flight request."""
 
-    __slots__ = ("cancel", "conn", "lock")
+    __slots__ = ("cancel", "conn", "thread_ident", "lock")
 
     def __init__(self) -> None:
         self.cancel = threading.Event()
         self.conn: Any = None
+        self.thread_ident: int | None = None
         self.lock = threading.Lock()
 
 
@@ -128,6 +129,7 @@ class _RequestRegistry:
         if item is not None:
             with item.lock:
                 item.conn = conn
+                item.thread_ident = threading.get_ident()
 
     def cancel(self, request_id: str) -> bool:
         with self._lock:
@@ -137,7 +139,18 @@ class _RequestRegistry:
         item.cancel.set()
         with item.lock:
             conn = item.conn
-        if conn is not None:
+            ident = item.thread_ident
+        # Resolve the connection by thread identity first: if the connection
+        # was recreated, the binding follows the new one without re-registering.
+        interrupted = False
+        if ident is not None:
+            try:
+                from core import engine as db_engine
+
+                interrupted = db_engine.interrupt_thread(ident)
+            except Exception:
+                interrupted = False
+        if not interrupted and conn is not None:
             # DuckDB interrupts the query currently running on this
             # connection, so a long scan aborts instead of finishing.
             try:
@@ -377,13 +390,18 @@ class SidecarServer:
         queued_at = time.perf_counter()
         pending = registry.register(request_id)
         # Bind the worker thread's DuckDB connection so a cancel can call
-        # ``interrupt()`` and abort the query actually running here.
-        try:
-            from core import engine as db_engine
+        # ``interrupt()`` and abort the query actually running here. Control
+        # operations (health/cancel/job status) never touch the data pool:
+        # they must answer even when every connection is busy with a heavy
+        # query, so they never wait on a reservation.
+        operation = str(request.get("operation") or "")
+        if operation not in _CONTROL_OPERATIONS:
+            try:
+                from core import engine as db_engine
 
-            registry.attach_conn(request_id, db_engine.get_conn())
-        except Exception:
-            pass
+                registry.attach_conn(request_id, db_engine.get_conn())
+            except Exception:
+                pass
 
         def progress(value: Any) -> None:
             percent, message = _progress_parts(value)
@@ -402,6 +420,14 @@ class SidecarServer:
                                      "reason": str(exc)}).as_dict()}
         finally:
             registry.discard(request_id)
+            # Return the pooled DuckDB connection so the next request on this
+            # worker thread starts from a clean, released lease.
+            try:
+                from core import engine as db_engine
+
+                db_engine.release_conn()
+            except Exception:
+                pass
         finished = time.perf_counter()
         # Per-request observability: never logs dataset contents, only timing
         # and outcome so a slow or cancelled request can be diagnosed.

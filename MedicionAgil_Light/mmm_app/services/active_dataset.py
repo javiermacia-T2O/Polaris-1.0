@@ -254,19 +254,16 @@ class ActiveDataset:
             cached = engine.cached_row_count(self.source)
             if cached is not None:
                 return cached
-        # A full COUNT(*) over a multi-gigabyte CSV is memory-intensive.
-        # Temporarily raise DuckDB's memory limit for this single query so
-        # the scan does not OOM on large files; the limit is restored after.
-        conn = engine.get_conn()
-        original_limit = conn.execute("SELECT current_setting('memory_limit')").fetchone()[0]
-        try:
-            conn.execute("SET memory_limit='512MB'")
-            count = conn.execute(
+        # A full COUNT(*) over a multi-gigabyte CSV is memory-intensive. The
+        # reservation goes through the single resource manager instead of a
+        # local ``SET memory_limit`` override that bypassed admission.
+        from core.resource_manager import get_manager
+
+        with get_manager().reserve("light", cancel=cancel):
+            count = engine.get_conn().execute(
                 f"SELECT COUNT(*) FROM {self._source_sql()}{where}",
                 self._params(params)
             ).fetchone()[0]
-        finally:
-            conn.execute(f"SET memory_limit='{original_limit}'")
         if cancel is not None and cancel.is_set():
             raise TaskCancelled()
         count = int(count)
@@ -487,9 +484,12 @@ class ActiveDataset:
         sql = (f"SELECT {', '.join(_ident(c) for c in selected)} "
                f"FROM {self._source_sql()}{where}")
         started = time.perf_counter()
+        from core.resource_manager import get_manager
+
         try:
-            result = engine.get_conn().execute(
-                sql, self._params(params)).fetchdf()
+            with get_manager().reserve("heavy", cancel=cancel):
+                result = engine.get_conn().execute(
+                    sql, self._params(params)).fetchdf()
         except Exception as exc:
             if _is_memory_error(exc):
                 raise MemoryError(
@@ -526,29 +526,32 @@ class ActiveDataset:
                f"FROM {self._source_sql()}{where}")
         import pyarrow.csv as pacsv
         import pyarrow.parquet as pq
-        reader = engine.get_conn().execute(
-            sql, self._params(params)).to_arrow_reader(100_000)
+        from core.resource_manager import get_manager
+
         path = Path(path)
-        with atomic_output(path) as temporary:
-            with temporary.open("wb") as stream:
-                if fmt == "parquet":
-                    writer = pq.ParquetWriter(stream, reader.schema,
-                                              compression="zstd")
-                else:
-                    writer = pacsv.CSVWriter(stream, reader.schema)
-                written = 0
-                try:
-                    for batch in reader:
+        with get_manager().reserve("heavy", cancel=cancel):
+            reader = engine.get_conn().execute(
+                sql, self._params(params)).to_arrow_reader(100_000)
+            with atomic_output(path) as temporary:
+                with temporary.open("wb") as stream:
+                    if fmt == "parquet":
+                        writer = pq.ParquetWriter(stream, reader.schema,
+                                                  compression="zstd")
+                    else:
+                        writer = pacsv.CSVWriter(stream, reader.schema)
+                    written = 0
+                    try:
+                        for batch in reader:
+                            if cancel is not None and cancel.is_set():
+                                raise TaskCancelled()
+                            writer.write_batch(batch)
+                            written += batch.num_rows
+                            if progress is not None:
+                                progress(f"Exportadas {written:,} filas")
                         if cancel is not None and cancel.is_set():
                             raise TaskCancelled()
-                        writer.write_batch(batch)
-                        written += batch.num_rows
-                        if progress is not None:
-                            progress(f"Exportadas {written:,} filas")
-                    if cancel is not None and cancel.is_set():
-                        raise TaskCancelled()
-                finally:
-                    writer.close()
+                    finally:
+                        writer.close()
         return path
 
     def profile_rows(self, date_column: str | None = None, cancel=None) -> dict:

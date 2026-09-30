@@ -16,6 +16,12 @@ class MemoryStatus:
 
 LAZY_FILE_EXTENSIONS = frozenset({".csv", ".tsv", ".txt", ".parquet"})
 
+# A partir de este tamaño, CSV/Parquet se abren siempre por la ruta lazy
+# (DuckDB sobre disco) aunque el preflight de RAM los considerase viables.
+# Materializar cientos de MiB en Pandas bloquea la UI y multiplica el pico
+# de memoria; la navegación lazy es equivalente y mucho más barata.
+LAZY_FORCE_BYTES = 256 * 1024 ** 2
+
 
 @dataclass(frozen=True)
 class LoadPlan:
@@ -142,6 +148,12 @@ def plan_load(path: Path, retained_bytes: int = 0,
     estimated = estimate_load_peak_bytes(path)
     budget = pandas_limit_bytes(status)
     ext = path.suffix.lower()
+    if ext in LAZY_FILE_EXTENSIONS and path.stat().st_size >= LAZY_FORCE_BYTES:
+        return LoadPlan(
+            "disk", estimated, retained_bytes, budget,
+            f"'{path.name}' supera {LAZY_FORCE_BYTES // (1024**2)} MiB; se "
+            "trabajará desde disco con DuckDB para no materializarlo en "
+            "memoria. El preview y las consultas siguen disponibles.")
     if retained_bytes + estimated <= budget:
         return LoadPlan(
             "pandas", estimated, retained_bytes, budget,

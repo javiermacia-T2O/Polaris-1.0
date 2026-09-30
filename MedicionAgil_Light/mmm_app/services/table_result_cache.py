@@ -63,53 +63,53 @@ def materialize_table_result(view: ActiveDataset, *, cancel=None,
         return cached
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    from core.resource_manager import get_manager
+
+    manager = get_manager()
     limit = memory_budget.table_query_duckdb_limit_bytes()
     if limit < 128 * 1024**2:
         raise MemoryError("Memoria libre insuficiente para construir la tabla. "
                           "Cierra otras aplicaciones y vuelve a intentarlo.")
     conn = engine.get_conn()
-    prior_limit = conn.execute(
-        "SELECT current_setting('memory_limit')").fetchone()[0]
     prior_threads = int(conn.execute(
         "SELECT current_setting('threads')").fetchone()[0])
-    limit_mib = max(128, limit // (1024**2))
     if progress is not None:
         progress((20, "Calculando y guardando la tabla en Parquet..."))
-    try:
-        conn.execute(f"SET memory_limit='{limit_mib}MB'")
-        with atomic_output(path) as pending:
-            def report(message):
-                if progress is not None:
-                    progress((45, str(message)))
+    # La reserva pesada pasa por el gestor único: no se cambia el límite de
+    # memoria de la conexión de forma local, que eludiría la admisión.
+    with manager.reserve("heavy", cancel=cancel):
+        try:
+            with atomic_output(path) as pending:
+                def report(message):
+                    if progress is not None:
+                        progress((45, str(message)))
 
-            try:
-                view.export(pending, "parquet", cancel=cancel,
-                            progress=report)
-            except Exception as exc:
-                if type(exc).__name__ != "OutOfMemoryException":
-                    raise
-                log_debug("MEM", "table Parquet retry", threads=1,
-                          memory_limit_mib=limit_mib)
-                conn.execute("SET threads=1")
-                if progress is not None:
-                    progress((45, "Reintentando con menor uso de memoria..."))
-                view.export(pending, "parquet", cancel=cancel,
-                            progress=report)
-            view._check_source()
-            if cancel is not None and cancel.is_set():
-                raise TaskCancelled()
-        stat = path.stat()
-        write_json_atomic(path.with_suffix(".json"), {
-            "version": token, "size": stat.st_size,
-            "mtime_ns": stat.st_mtime_ns,
-        })
-    finally:
-        if _file_backed(view):
-            # Libera el hash de agregación antes de leer el Parquet resultante.
-            engine.reset_conn()
-        else:
-            conn.execute(f"SET threads={prior_threads}")
-            conn.execute(f"SET memory_limit='{prior_limit}'")
+                try:
+                    view.export(pending, "parquet", cancel=cancel,
+                                progress=report)
+                except Exception as exc:
+                    if type(exc).__name__ != "OutOfMemoryException":
+                        raise
+                    log_debug("MEM", "table Parquet retry", threads=1)
+                    conn.execute("SET threads=1")
+                    if progress is not None:
+                        progress((45, "Reintentando con menor uso de memoria..."))
+                    view.export(pending, "parquet", cancel=cancel,
+                                progress=report)
+                view._check_source()
+                if cancel is not None and cancel.is_set():
+                    raise TaskCancelled()
+            stat = path.stat()
+            write_json_atomic(path.with_suffix(".json"), {
+                "version": token, "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            })
+        finally:
+            if _file_backed(view):
+                # Libera el hash de agregación antes de leer el Parquet.
+                engine.reset_conn()
+            else:
+                conn.execute(f"SET threads={prior_threads}")
     if progress is not None:
         progress((75, "Tabla guardada; cargando vista previa..."))
     return ActiveDataset.open_file(path)

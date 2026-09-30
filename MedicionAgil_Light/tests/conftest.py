@@ -20,3 +20,22 @@ def stable_system_memory_for_unit_tests(monkeypatch):
     monkeypatch.setattr(memory_budget, "system_memory", lambda: (
         memory_budget.MemoryStatus(16 * memory_budget.GIB,
                                    8 * memory_budget.GIB)))
+
+
+@pytest.fixture(autouse=True)
+def release_engine_connection_between_tests():
+    """Return any pooled DuckDB connection held by the test thread.
+
+    The connection pool lends at most two exclusive connections. A test that
+    calls ``engine.get_conn()`` on the main thread without releasing would pin
+    a lease for the rest of the session, starving later tests that need both
+    connections (for example the sidecar concurrency tests). Releasing here
+    keeps every test independent of the ones that ran before it.
+    """
+    yield
+    try:
+        from core import engine
+
+        engine.release_conn()
+    except Exception:
+        pass

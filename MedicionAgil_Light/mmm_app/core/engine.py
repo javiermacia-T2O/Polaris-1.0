@@ -95,6 +95,12 @@ import threading
 _CONN_LOCAL = threading.local()
 _FILE_VIEWS = {}
 _FILE_VIEWS_VERSION = 0
+# Versión de vistas ya aplicada a cada conexión del pool. Se guarda también
+# la referencia a la conexión para detectar reutilización de ``id()`` tras
+# cerrar una conexión (un id reciclado no debe heredar la versión anterior).
+_VIEWS_BY_CONN: dict[int, tuple[object, int]] = {}
+_POOL = None
+_POOL_LOCK = threading.Lock()
 
 def register_file_in_duckdb(path: Path, name: str = "_src_file") -> str:
     """
@@ -122,7 +128,7 @@ def register_file_in_duckdb(path: Path, name: str = "_src_file") -> str:
         global _FILE_VIEWS_VERSION
         _FILE_VIEWS[name] = (path_posix, ext)
         _FILE_VIEWS_VERSION += 1
-        _CONN_LOCAL.views_version = _FILE_VIEWS_VERSION
+        _VIEWS_BY_CONN[id(conn)] = (conn, _FILE_VIEWS_VERSION)
         return name
     except Exception as e:
         raise RuntimeError(f"No se pudo registrar '{path}' en DuckDB: {e}")
@@ -174,60 +180,113 @@ def _detect_available_ram_gb() -> float:
         return 16.0  # fallback conservador
 
 
+def _configure_conn(conn):
+    """Aplica los PRAGMA de memoria/threads/temp a una conexión nueva."""
+    # El mínimo por conexión es la mitad del suelo conjunto (128 MiB), no el
+    # suelo completo: comparar contra 128 MiB rechazaba la lectura desde disco
+    # incluso para archivos pequeños cuando la RAM libre era baja. DuckDB
+    # admite límites pequeños y desborda a temp_directory.
+    memory_limit_mb = _memory.duckdb_limit_bytes() // (2 * 1024**2)
+    if memory_limit_mb < 256:
+        memory_limit_mb = 256
+    try:
+        print(f"[engine] DuckDB memory_limit={memory_limit_mb} MiB")
+        conn.execute(f"PRAGMA threads={min(N_THREADS, 4)}")
+        conn.execute(f"PRAGMA memory_limit='{memory_limit_mb}MB'")
+        conn.execute(f"PRAGMA temp_directory='{CACHE_DIR.as_posix()}'")
+        conn.execute("PRAGMA enable_progress_bar=false")
+        # Conservar índices para mejor uso de memoria.
+        conn.execute("PRAGMA preserve_insertion_order=false")
+    except Exception as e:
+        conn.close()
+        raise RuntimeError(f"No se pudo limitar la memoria de DuckDB: {e}") from e
+    return conn
+
+
+def _apply_views(conn):
+    """Recrea las vistas de archivo registradas si la conexión está atrasada."""
+    entry = _VIEWS_BY_CONN.get(id(conn))
+    if entry is not None and entry[0] is conn and entry[1] == _FILE_VIEWS_VERSION:
+        return
+    for name, (path_posix, ext) in _FILE_VIEWS.items():
+        escaped = path_posix.replace("'", "''")
+        source = (f"read_parquet('{escaped}')" if ext == ".parquet"
+                  else f"read_csv_auto('{escaped}', sample_size=-1, "
+                       "ignore_errors=true)")
+        conn.execute(f'CREATE OR REPLACE VIEW "{name}" AS '
+                     f'SELECT * FROM {source}')
+    _VIEWS_BY_CONN[id(conn)] = (conn, _FILE_VIEWS_VERSION)
+
+
+def _pool():
+    """Pool de hasta dos conexiones DuckDB reutilizables y exclusivas."""
+    global _POOL
+    if _POOL is None:
+        with _POOL_LOCK:
+            if _POOL is None:
+                from core.resource_manager import ConnectionPool
+
+                _POOL = ConnectionPool(
+                    lambda: _configure_conn(duckdb.connect(database=":memory:")),
+                    max_size=2)
+    return _POOL
+
+
 def get_conn():
-    """Conexión DuckDB independiente para Tk y el worker."""
+    """Conexión DuckDB exclusiva del hilo actual, prestada por el pool.
+
+    El préstamo dura toda la consulta y el consumo del reader; se libera con
+    ``release_conn()``. Es reentrante por hilo, así que una operación que
+    llama varias veces a ``get_conn`` no se bloquea a sí misma.
+    """
     if not _DUCKDB_OK:
         raise RuntimeError(
             "DuckDB no está instalado. Ejecuta: pip install duckdb"
         )
-    conn = getattr(_CONN_LOCAL, "conn", None)
-    if conn is None:
-        # Tk y un worker: ambas conexiones juntas respetan el límite DuckDB.
-        # El mínimo por conexión es la mitad del suelo conjunto (128 MiB), no
-        # el suelo completo: comparar contra 128 MiB rechazaba la lectura
-        # desde disco incluso para archivos pequeños cuando la RAM libre era
-        # baja. DuckDB admite límites pequeños y desborda a temp_directory.
-        memory_limit_mb = _memory.duckdb_limit_bytes() // (2 * 1024**2)
-        if memory_limit_mb < 256:
-            memory_limit_mb = 256
-        conn = duckdb.connect(database=":memory:")
-        try:
-            print(f"[engine] DuckDB memory_limit={memory_limit_mb} MiB")
-
-            conn.execute(f"PRAGMA threads={min(N_THREADS, 4)}")
-            conn.execute(f"PRAGMA memory_limit='{memory_limit_mb}MB'")
-            conn.execute(f"PRAGMA temp_directory='{CACHE_DIR.as_posix()}'")
-            conn.execute("PRAGMA enable_progress_bar=false")
-
-            # --- Optimizaciones adicionales ---
-            # 1. Conservar índices para mejor uso de memoria
-            conn.execute("PRAGMA preserve_insertion_order=false")
-        except Exception as e:
-            conn.close()
-            raise RuntimeError(f"No se pudo limitar la memoria de DuckDB: {e}") from e
-        _CONN_LOCAL.conn = conn
-        _CONN_LOCAL.views_version = -1
-    if _CONN_LOCAL.views_version != _FILE_VIEWS_VERSION:
-        for name, (path_posix, ext) in _FILE_VIEWS.items():
-            escaped = path_posix.replace("'", "''")
-            source = (f"read_parquet('{escaped}')" if ext == ".parquet"
-                      else f"read_csv_auto('{escaped}', sample_size=-1, "
-                           "ignore_errors=true)")
-            conn.execute(f'CREATE OR REPLACE VIEW "{name}" AS '
-                         f'SELECT * FROM {source}')
-        _CONN_LOCAL.views_version = _FILE_VIEWS_VERSION
+    conn = _pool().acquire()
+    _apply_views(conn)
     return conn
 
 
+def release_conn():
+    """Devuelve la conexión prestada al hilo actual (idempotente).
+
+    Suelta el préstamo por completo, sea cual sea su profundidad reentrante:
+    una operación que llamó a ``get_conn`` varias veces debe dejar la conexión
+    libre para otros hilos al terminar, no solo decrementar un contador.
+    """
+    if _POOL is not None:
+        _POOL.drop_lease()
+
+
+def interrupt_thread(ident: int) -> bool:
+    """Interrumpe la operación activa de la conexión de un hilo concreto.
+
+    Se resuelve por identidad de hilo, así que si la conexión se recreó el
+    vínculo apunta a la nueva sin re-registrar nada.
+    """
+    if _POOL is None:
+        return False
+    return _POOL.interrupt_thread(ident)
+
+
 def reset_conn():
-    """Cierra la conexión del hilo actual (libera memoria)."""
-    conn = getattr(_CONN_LOCAL, "conn", None)
+    """Cierra la conexión del hilo actual (libera memoria).
+
+    Se conserva como adaptador de las rutas legadas: cierra la conexión
+    prestada y la retira del pool para que la próxima llamada cree una nueva.
+    """
+    if _POOL is None:
+        return
+    conn = _POOL.current()
     if conn is not None:
         try:
             conn.close()
         except Exception:
             pass
-    _CONN_LOCAL.conn = None
+        _VIEWS_BY_CONN.pop(id(conn), None)
+    _POOL.drop_lease()
+    _POOL.close_idle()
 
 
 # ==================================================================

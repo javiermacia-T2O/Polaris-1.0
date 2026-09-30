@@ -37,6 +37,7 @@ class _DatasetEntry:
     original: ActiveDataset
     active: ActiveDataset
     source_path: Path | None
+    resident_bytes: int = 0
 
 
 @dataclass
@@ -74,12 +75,22 @@ class MedicionApplication:
             raise DataValidationError(
                 "El archivo no existe.", details={"path": str(source)})
         try:
-            loaded = read_dataset(source, 0, lambda _message: None)
+            # Count every resident dataset/result so the load preflight never
+            # ignores memory already held by the session.
+            from core.resource_manager import get_manager
+
+            retained = get_manager().resident_bytes()
+            loaded = read_dataset(source, retained, lambda _message: None)
             dataset = (loaded if isinstance(loaded, ActiveDataset)
                        else ActiveDataset.from_frame(loaded))
+            if dataset.backend == "pandas":
+                resident = int(dataset.source.memory_usage(deep=True).sum())
+                get_manager().note_resident(resident)
+            else:
+                resident = 0
             dataset_id = uuid.uuid4().hex
             entry = _DatasetEntry(dataset_id, source.stem, dataset, dataset,
-                                  source)
+                                  source, resident)
             with self._lock:
                 self._datasets[dataset_id] = entry
             return self.get_dataset_metadata(dataset_id)
@@ -92,13 +103,18 @@ class MedicionApplication:
 
     def close_dataset(self, dataset_id: str) -> None:
         with self._lock:
-            if self._datasets.pop(dataset_id, None) is None:
+            entry = self._datasets.pop(dataset_id, None)
+            if entry is None:
                 raise DataValidationError("Dataset no encontrado.",
                                           details={"dataset_id": dataset_id})
             self._row_counts.pop(dataset_id, None)
             self._row_count_pending = {
                 key for key in self._row_count_pending
                 if key[0] != dataset_id}
+        if entry.resident_bytes:
+            from core.resource_manager import get_manager
+
+            get_manager().note_resident(-entry.resident_bytes)
 
     def list_datasets(self) -> list[DatasetMetadata]:
         with self._lock:
