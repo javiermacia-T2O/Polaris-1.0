@@ -5,6 +5,16 @@ sesión. No borrar entradas: lo completado queda como historial.
 
 ## Tareas completadas
 
+- **FASE 3 — datos masivos y flujo funcional unificado** (2026-09-30):
+  gestor único de recursos y dos conexiones exclusivas; páginas estables con
+  total desconocido/`has_more`; filtros tipados, buscables y cancelables;
+  caché de usuario con conversión CSV diferida; tablas agregadas a Parquet;
+  pivot null-safe sin colisiones; concat/join lazy; contabilización residente;
+  Datos y Constructor fusionados, tipos en cabeceras y mensajes de éxito solo
+  tras actualizar el preview. Benchmark real 5.37 GB documentado en
+  `PHASE3_EXECUTION.md`. Frontend: typecheck, 5 tests y build PASS. Smoke final
+  Windows pendiente por limitación del runner Linux.
+
 - **FASE 2 — Arranque coordinado por eventos + splash profesional** (2026-09-30):
   - **Gate FASE 1 (PASO 0)**: sidecar real PyInstaller `--onedir` reconstruido
     y desplegado en `src-tauri/target/debug/sidecar/`. `scripts/gate_fase1.py`

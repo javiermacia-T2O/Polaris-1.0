@@ -8,9 +8,10 @@ cada bloque. No duplicar informes.
 
 - Repositorio: https://github.com/javiermacia-T2O/Polaris-1.0.git
 - Base auditada: `5d1b2a6` (Fases 1/2 terminadas).
-- Rama de trabajo: `fase3-lazy-navigation`.
-- Sin commit/push/reset en este encargo.
-- Entorno: Python 3.12.14 (`.venv`), Node v24.21.0, Rust 1.98.1, Windows.
+- Rama integrada: `codex/fase3-complete` (base `4140069`).
+- Entornos usados: Windows para la línea base/benchmark y Linux para la
+  reconstrucción final de frontend. El smoke Windows final se mantiene como
+  validación pendiente, no se declara como PASS.
 
 ## Línea base de tests (antes de editar)
 
@@ -34,10 +35,10 @@ Resultado: **269 passed, 1 failed, 1 skipped** (64.93 s).
 |--------|--------|
 | 1. Línea base y contratos | DONE |
 | 2. Recursos, conexiones y cancelación | DONE |
-| 3. Dataset, caché y navegación | NOT STARTED |
-| 4. Tablas, pivot y uniones | NOT STARTED |
-| 5. Análisis, resultados y exportación | NOT STARTED |
-| 6. Validación y entrega | NOT STARTED |
+| 3. Dataset, caché y navegación | DONE |
+| 4. Tablas, pivot y uniones | DONE |
+| 5. Análisis, resultados y exportación | DONE |
+| 6. Validación y entrega | PARTIAL (smoke Windows pendiente) |
 
 ## Bloque 2 — Recursos, conexiones y cancelación (DONE)
 
@@ -96,7 +97,80 @@ Resultado: **269 passed, 1 failed, 1 skipped** (64.93 s).
   son ambientales, no regresiones de este bloque.
 - `tests/test_resource_manager.py` en aislamiento: 28 passed.
 
-## Siguiente acción exacta
+## Bloques 3–5 — implementación final
 
-Bloque 3: dataset, caché y navegación (`core/loader.py`, `core/atomic.py`,
-`core/diagnostics.py`).
+- Navegación: total desconocido es `null`, `has_more` se obtiene con una fila
+  interna adicional; máximo público 1000. CSV/Parquet conservan orden físico
+  con identidad oculta y el sort solicitado añade desempate estable.
+- Filtros: búsqueda DISTINCT server-side, tipada, 100 valores por página,
+  cursor ligado a versión/columna/búsqueda, debounce de 250 ms y cancelación
+  real por `AbortSignal`. Nulo, cadena vacía y texto `(vacío)` no colisionan.
+- Caché: ubicación escribible de usuario (`POLARIS_CACHE_DIR` o caché del SO),
+  separación reusable/resultados/tmp/sesión, cuota y reserva de disco, LRU/TTL
+  de generaciones no referenciadas y limpieza conservadora de sesiones
+  huérfanas. CSV >=256 MiB sigue disponible directamente y programa una única
+  conversión Parquet tras dos consultas correctas.
+- Constructor: la tabla agregada se materializa una vez a Parquet antes de
+  comunicar éxito. Pivots usan categorías como tuplas tipadas y condiciones
+  parametrizadas null-safe; límite 50 categorías/500 columnas en rutas lazy y
+  Pandas.
+- Uniones: concat lazy mediante `UNION ALL [BY NAME]`; joins lazy null-safe con
+  preflight exacto y materialización Parquet. Se conservan dependencias de
+  todas las fuentes y duplicados.
+- Recursos: jobs quedan vinculados al dataset y a la conexión activa; cierre y
+  cancelación interrumpen SQL, liberan préstamos y el historial terminal queda
+  acotado. Datasets/resultados Pandas se contabilizan como memoria residente.
+- UX: Datos y Constructor son una sola pestaña. El tipo se edita en la cabecera
+  de cada columna. Se eliminó el panel de pivotado duplicado. El rol Filtro ya
+  no se deselecciona al estar vacío; la confirmación de aplicar/cargar solo se
+  muestra después de invalidar estado y cargar el primer preview real.
+
+## Validación
+
+### Antes de la reconstrucción del entorno
+
+- Python: **295 passed, 6 skipped** (los skips corresponden a Tk no disponible).
+- Dataset real CSV: **5,369,374,621 bytes**, **75,870,000 filas**, 30 columnas.
+- Parquet equivalente: **515,235,414 bytes**.
+
+| Escenario | CSV | Parquet |
+|---|---:|---:|
+| Primera página (mediana) | 0.066 s | 0.025 s |
+| Página profunda (mediana) | 0.082 s | 0.021 s |
+| Filtro acotado | 0.090 s | — |
+| DISTINCT completo | 21.36 s | 6.05 s |
+| Sort completo | 23.58 s | 6.05 s |
+| Pico observado | 420,676 KiB | 243,580 KiB |
+
+La navegación directa CSV tuvo un pico específico de 228,652 KiB. Los tiempos
+de operaciones completas se separan de navegación acotada; no se presenta el
+cache del SO como cold garantizado.
+
+### Reconstrucción final
+
+- `npm run typecheck`: PASS.
+- `npm test -- --run`: **5 passed** (incluye regresión Fila→Filtro).
+- `npm run build`: PASS, 158 módulos.
+- `python -m py_compile` sobre el delta: PASS.
+- Suite Python final y Cargo: pendientes en este runner porque el reinicio del
+  workspace eliminó el ejecutable de `.venv` y dejó truncado el binario nativo
+  de DuckDB; la red restringida impidió reconstruir `jaxlib`. Esto es un
+  bloqueo de validación del entorno, no se marca como PASS.
+- Smoke release Windows/PyInstaller: pendiente (runner Linux sin Rust ni
+  ejecutable Windows).
+
+Scripts reproducibles añadidos: `scripts/generate_phase3_data.py` y
+`scripts/benchmark_phase3.py`.
+
+## Estado y siguiente acción exacta
+
+Código de Bloques 1–5: **DONE**. Validación Bloque 6: **PARTIAL** hasta ejecutar
+en Windows:
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q --no-header --basetemp=.pytest_tmp -p no:cacheprovider
+npm run typecheck; npm test -- --run; npm run build
+cargo test --manifest-path src-tauri/Cargo.toml
+powershell -ExecutionPolicy Bypass -File scripts/build_sidecar.ps1
+python scripts/gate_fase1.py
+```

@@ -6,16 +6,15 @@ el que continuar. Actualizar obligatoriamente antes de terminar cada sesión.
 ## Última sesión
 
 - **Fecha**: 2026-09-30
-- **Estado**: FASE 2 completada. El arranque es ahora coordinado por eventos
-  reales: splash independiente (HTML plano, sin React), ventana principal
-  oculta hasta que motor y frontend están listos, `StartupCoordinator` con
-  estados explícitos, prewarm del sidecar durante el `setup` de Tauri y
-  watchdog con reintento. Ver `docs/IPC.md` §7.
+- **Estado**: implementación funcional de FASE 3 completada en
+  `codex/fase3-complete`; validación Windows final pendiente. Navegación 5 GB,
+  recursos/cancelación, tablas materializadas, pivot tipado, unión lazy y
+  espacio unificado Datos+Constructor están implementados.
 
 ## Estado exacto
 
-- **Rama/git**: `main`, remoto `origin` =
-  https://github.com/javiermacia-T2O/Polaris-1.0.git. HEAD previo `ee94e6f`.
+- **Rama/git**: `codex/fase3-complete`, base `4140069`, remoto `origin` =
+  https://github.com/javiermacia-T2O/Polaris-1.0.git.
 - **Cambios de esta sesión (FASE 2 arranque)**:
   - `src-tauri/src/lib.rs`: `StartupCoordinator` (8 estados), `reveal_plan()`
     puro, `reveal_once()` idempotente, `pending_state()`, `prewarm_engine()`,
@@ -43,10 +42,9 @@ el que continuar. Actualizar obligatoriamente antes de terminar cada sesión.
 
 ## Continuar desde
 
-1. FASE 3 (no iniciada): no avanzar sin instrucción explícita.
-2. Opcional: corregir los 2 fallos preexistentes de `test_light_geox_layout.py`.
-3. Opcional: reducir el tiempo de `ENGINE_READY` (el arranque del sidecar
-   congelado domina el TTI; ver `docs/IPC.md` §7.4).
+1. Ejecutar los comandos Windows exactos de `docs/PHASE3_EXECUTION.md`.
+2. Si todos pasan, fusionar `codex/fase3-complete` en `main`.
+3. No iniciar Fase 4 dentro de este cierre.
 
 Los informes técnicos están indexados en `docs/README.md` y
 `docs/ANALISIS/README.md`. La fuente de verdad sobre comportamiento sigue

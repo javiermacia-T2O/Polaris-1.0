@@ -78,7 +78,7 @@ def test_large_source_row_count_is_deferred_and_resolved(tmp_path, monkeypatch):
     try:
         metadata = app.get_dataset_metadata("dataset-1")
         assert metadata.rows_approximate is True
-        assert metadata.rows == 0
+        assert metadata.rows is None
         deadline = time.time() + 5
         while app.get_dataset_metadata("dataset-1").rows_approximate \
                 and time.time() < deadline:

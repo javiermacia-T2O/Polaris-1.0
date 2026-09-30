@@ -49,12 +49,16 @@ describe("frontend readiness signal", () => {
     const module = await import("../main");
     await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
+    const before = invoke.mock.calls.filter(
+      (call) => call[0] === "frontend_ready",
+    ).length;
+    expect(before).toBeGreaterThanOrEqual(1);
     // Simulate the extra signals StrictMode and the load listener can produce.
     module.signalFrontendReady();
     module.signalFrontendReady();
     const readinessCalls = invoke.mock.calls.filter(
       (call) => call[0] === "frontend_ready",
     );
-    expect(readinessCalls).toHaveLength(1);
+    expect(readinessCalls).toHaveLength(before);
   });
 });

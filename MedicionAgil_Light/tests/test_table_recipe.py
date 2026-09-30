@@ -344,6 +344,22 @@ def test_text_metric_defaults_to_count_when_aggregation_is_missing(tmp_path):
     assert dict(zip(result["group"], result["label"])) == {"a": 2, "b": 1}
 
 
+def test_pivot_keeps_null_literal_empty_and_separator_categories_distinct(tmp_path):
+    source = _dataset(tmp_path, pd.DataFrame({
+        "group": ["g"] * 4,
+        "category": [None, "", "(vacío)", "a | b"],
+        "value": [1, 2, 3, 4],
+    }))
+    recipe = TableRecipe.from_parts(
+        ["group"], ["category"],
+        [{"col": "value", "agg": "sum", "pivot": True}])
+    result = table_service.preview_to_pandas(source, recipe)
+    assert "(vacío)" in result.columns
+    assert '"(vacío)"' in result.columns
+    assert '"a | b"' in result.columns
+    assert len(result.columns) == 5
+
+
 def test_numeric_aggregation_on_text_metric_has_clear_error(tmp_path):
     source = _dataset(tmp_path, pd.DataFrame({
         "group": ["a"], "label": ["x"]}))

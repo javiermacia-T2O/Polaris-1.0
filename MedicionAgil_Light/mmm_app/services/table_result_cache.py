@@ -67,6 +67,10 @@ def materialize_table_result(view: ActiveDataset, *, cancel=None,
 
     manager = get_manager()
     limit = memory_budget.table_query_duckdb_limit_bytes()
+    from core.cache_store import get_cache_store
+    # The exact compressed size is unknown before execution. Reserve a
+    # conservative heavy-query allowance and re-check free space atomically.
+    get_cache_store().ensure_space(max(limit, 256 * 1024**2))
     if limit < 128 * 1024**2:
         raise MemoryError("Memoria libre insuficiente para construir la tabla. "
                           "Cierra otras aplicaciones y vuelve a intentarlo.")

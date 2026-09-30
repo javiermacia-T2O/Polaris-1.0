@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import importlib.metadata
 import importlib
@@ -69,6 +69,8 @@ class MedicionApplication:
         # Version tokens whose count is being computed in the background, so
         # concurrent metadata polls never launch duplicate scans.
         self._row_count_pending: set[tuple[str, str]] = set()
+        self._query_successes: dict[tuple[str, str], int] = {}
+        self._cache_pending: set[tuple[str, str]] = set()
 
     def load_dataset(self, path: str | Path) -> DatasetMetadata:
         source = Path(path).expanduser().resolve()
@@ -94,6 +96,7 @@ class MedicionApplication:
                                   source, resident)
             with self._lock:
                 self._datasets[dataset_id] = entry
+            self._pin_dataset(dataset)
             return self.get_dataset_metadata(dataset_id)
         except MemoryError as exc:
             raise MemoryBudgetError(str(exc)) from exc
@@ -117,6 +120,7 @@ class MedicionApplication:
             from core.resource_manager import get_manager
 
             get_manager().note_resident(-entry.resident_bytes)
+        self._unpin_dataset(entry.active)
 
     def list_datasets(self) -> list[DatasetMetadata]:
         with self._lock:
@@ -406,6 +410,7 @@ class MedicionApplication:
                                                            entry.active)
         has_more = len(frame) > limit
         frame = frame.head(limit)
+        self._note_successful_query(dataset_id, entry)
         return TablePage(
             dataset_id=dataset_id, offset=offset, limit=limit,
             total_rows=total_rows,
@@ -413,6 +418,44 @@ class MedicionApplication:
             rows=frame_records(frame),
             total_rows_approximate=approximate, has_more=has_more,
             dataset_version=entry.active.version_token())
+
+    def _note_successful_query(self, dataset_id: str,
+                               entry: _DatasetEntry) -> None:
+        """Schedule one transparent CSV→Parquet optimisation after two reads."""
+        origin = entry.original
+        if origin.backend != "duckdb_csv" or origin.file_size < 256 * 1024**2:
+            return
+        token = origin.version_token()
+        key = (dataset_id, token)
+        with self._lock:
+            count = self._query_successes.get(key, 0) + 1
+            self._query_successes[key] = count
+            if count < 2 or key in self._cache_pending:
+                return
+            self._cache_pending.add(key)
+
+        def convert(cancel, progress):
+            try:
+                path = origin.cache_as_parquet(cancel=cancel, progress=progress)
+                cached = ActiveDataset.open_file(path)
+                with self._lock:
+                    current = self._datasets.get(dataset_id)
+                    if current is None or current.original.version_token() != token:
+                        return None
+                    active = replace(cached, filters=current.active.filters,
+                                     projection=current.active.projection,
+                                     date_bounds=current.active.date_bounds)
+                    current.original = cached
+                    current.active = active
+                    self._row_counts.pop(dataset_id, None)
+                self._pin_dataset(cached)
+                self._unpin_dataset(origin)
+                return None
+            finally:
+                with self._lock:
+                    self._cache_pending.discard(key)
+
+        self.jobs.submit("cache_csv", convert, owner_id=dataset_id)
 
     def preview_table(self, dataset_id: str, recipe: dict[str, Any],
                       limit: int = 20) -> TablePage:
@@ -478,15 +521,22 @@ class MedicionApplication:
             if entry.active.backend == "pandas":
                 view = ActiveDataset.from_frame(
                     self._build_pandas_table(entry.active._frame(), table_recipe))
+                resident = int(view.source.memory_usage(deep=True).sum())
             else:
                 view = build_table_view(entry.active, table_recipe)
                 from services.table_result_cache import materialize_table_result
                 view = materialize_table_result(
                     view, cancel=cancel, progress=progress)
+                resident = 0
             table_id = uuid.uuid4().hex
             with self._lock:
                 self._datasets[table_id] = _DatasetEntry(
-                    table_id, f"{entry.name} · tabla", view, view, None)
+                    table_id, f"{entry.name} · tabla", view, view, None,
+                    resident)
+            self._pin_dataset(view)
+            if resident:
+                from core.resource_manager import get_manager
+                get_manager().note_resident(resident)
             if progress is not None:
                 progress((100, "Tabla construida y lista"))
             return table_id
@@ -579,7 +629,7 @@ class MedicionApplication:
 
         if any(pivots) and recipe.columns:
             pivot_columns = list(recipe.columns)
-            categories = working[pivot_columns].dropna().drop_duplicates()
+            categories = working[pivot_columns].drop_duplicates()
             if len(categories) > 50:
                 raise ValueError("Pivot con más de 50 columnas; filtra sus valores")
             group_columns = list(dict.fromkeys([*recipe.rows, *pivot_columns]))
@@ -595,10 +645,19 @@ class MedicionApplication:
                     continue
                 piece = long.pivot(index=index, columns=pivot_columns,
                                    values=name)
-                piece.columns = [
-                    f"{name} · " + " | ".join(str(part) for part in value)
-                    if isinstance(value, tuple) else f"{name} · {value}"
-                    for value in piece.columns]
+                def pivot_label(value: Any) -> str:
+                    parts = value if isinstance(value, tuple) else (value,)
+                    labels = []
+                    for part in parts:
+                        if pd.isna(part):
+                            labels.append("(vacío)")
+                        else:
+                            text = str(part)
+                            labels.append(f'"{text}"' if text == "(vacío)"
+                                          or " | " in text else text)
+                    return " | ".join(labels)
+                piece.columns = [f"{name} · {pivot_label(value)}"
+                                 for value in piece.columns]
                 pieces.append(piece)
             result = pd.concat(pieces, axis=1).reset_index()
             flat_names = [name for name, pivot in zip(names, pivots)
@@ -614,6 +673,11 @@ class MedicionApplication:
         else:
             groups = list(dict.fromkeys([*recipe.rows, *recipe.columns]))
             result = aggregate(working, groups)
+
+        if len(result.columns) > 500:
+            raise ValueError(
+                "El resultado tendría más de 500 columnas; filtra las "
+                "categorías antes de pivotar.")
 
         for column, ascending in recipe.order:
             if column not in result.columns:
@@ -665,9 +729,15 @@ class MedicionApplication:
                 if diagnostic:
                     result.setdefault("Diagnóstico de ejecución", diagnostic)
                 result_id = uuid.uuid4().hex
+                resident = sum(int(value.memory_usage(deep=True).sum())
+                               for value in result.values()
+                               if isinstance(value, pd.DataFrame))
+                if resident:
+                    from core.resource_manager import get_manager
+                    get_manager().note_resident(resident)
                 with self._lock:
                     self._results[result_id] = _ResultEntry(
-                        result_id, analysis_id, result)
+                        result_id, analysis_id, result, resident)
                 return result_id
             except MemoryError as exc:
                 raise MemoryBudgetError(str(exc)) from exc
@@ -804,37 +874,49 @@ class MedicionApplication:
         ``operation`` is ``concat`` (stack rows) or ``merge`` (join on keys).
         ``mode`` selects ``all`` columns or only ``common`` ones for concat.
         """
-        from services.merge_service import concat_datasets, merge_datasets
+        from services.merge_service import (concat_active, concat_datasets,
+                                            join_active, merge_datasets)
 
         if len(dataset_ids) < 2:
             raise UserInputError("Selecciona al menos 2 datasets para unir.")
         entries = [self._dataset(dataset_id) for dataset_id in dataset_ids]
-        frames: dict[str, pd.DataFrame] = {}
-        for entry in entries:
-            try:
-                frames[entry.dataset_id] = entry.active.analysis_frame(
-                    cancel=cancel)
-            except MemoryError as exc:
-                raise MemoryBudgetError(str(exc)) from exc
         try:
-            if operation == "concat":
-                result = concat_datasets(frames, dataset_ids, mode)
-            elif operation == "merge":
-                result = merge_datasets(frames, dataset_ids, keys or [], how)
+            lazy = all(entry.active.backend != "pandas" for entry in entries)
+            if lazy and operation == "concat":
+                dataset = concat_active([entry.active for entry in entries], mode)
+            elif lazy and operation == "merge":
+                dataset = join_active([entry.active for entry in entries],
+                                      keys or [], how, cancel=cancel)
+                from services.table_result_cache import materialize_table_result
+                dataset = materialize_table_result(dataset, cancel=cancel)
             else:
-                raise UserInputError("Operación de unión no soportada.",
-                                     details={"operation": operation})
+                frames = {entry.dataset_id: entry.active.analysis_frame(
+                    cancel=cancel) for entry in entries}
+                if operation == "concat":
+                    result = concat_datasets(frames, dataset_ids, mode)
+                elif operation == "merge":
+                    result = merge_datasets(frames, dataset_ids, keys or [], how)
+                else:
+                    raise UserInputError("Operación de unión no soportada.",
+                                         details={"operation": operation})
+                dataset = ActiveDataset.from_frame(result)
         except MemoryError as exc:
             raise MemoryBudgetError(str(exc)) from exc
         except (KeyError, ValueError) as exc:
             raise UserInputError("No se pudieron unir los datasets.",
                                  details={"reason": str(exc)}) from exc
-        dataset = ActiveDataset.from_frame(result)
         dataset_id = uuid.uuid4().hex
         label = name.strip() or "unido"
-        entry = _DatasetEntry(dataset_id, label, dataset, dataset, None)
+        resident = (int(dataset.source.memory_usage(deep=True).sum())
+                    if dataset.backend == "pandas" else 0)
+        if resident:
+            from core.resource_manager import get_manager
+            get_manager().note_resident(resident)
+        entry = _DatasetEntry(dataset_id, label, dataset, dataset, None,
+                              resident)
         with self._lock:
             self._datasets[dataset_id] = entry
+        self._pin_dataset(dataset)
         return self.get_dataset_metadata(dataset_id)
 
     def get_cache_info(self) -> dict[str, Any]:
@@ -890,6 +972,32 @@ class MedicionApplication:
             resident += sum(entry.resident_bytes for entry in self._results.values())
         if resident:
             get_manager().note_resident(-resident)
+        with self._lock:
+            datasets = [entry.active for entry in self._datasets.values()]
+        for dataset in datasets:
+            self._unpin_dataset(dataset)
+
+    @staticmethod
+    def _pin_dataset(dataset: ActiveDataset) -> None:
+        from core.cache_store import get_cache_store
+        root = get_cache_store().layout.root.resolve()
+        for path in dataset.source_files():
+            try:
+                path.resolve().relative_to(root)
+            except ValueError:
+                continue
+            get_cache_store().pin(path)
+
+    @staticmethod
+    def _unpin_dataset(dataset: ActiveDataset) -> None:
+        from core.cache_store import get_cache_store
+        root = get_cache_store().layout.root.resolve()
+        for path in dataset.source_files():
+            try:
+                path.resolve().relative_to(root)
+            except ValueError:
+                continue
+            get_cache_store().unpin(path)
 
     def _dataset(self, dataset_id: str) -> _DatasetEntry:
         with self._lock:

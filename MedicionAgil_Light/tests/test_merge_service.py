@@ -4,8 +4,9 @@ from threading import Event
 from types import SimpleNamespace
 
 from core import memory_budget
-from services.merge_service import concat_datasets, merge_datasets
-from services.active_dataset import LazyLoaded
+from services.merge_service import (concat_active, concat_datasets,
+                                    join_active, merge_datasets)
+from services.active_dataset import ActiveDataset, LazyLoaded
 from ui.dialogs.merge_dialog import (
     _dataset_columns, _dataset_shape, prepare_selected_datasets,
 )
@@ -51,6 +52,21 @@ def test_merge_keeps_numbered_suffixes():
     assert result.to_dict("list") == {
         "key": [1], "value": [10], "value_1": [20], "value_2": [30],
     }
+
+
+def test_lazy_concat_and_join_preserve_duplicates_and_null_keys(tmp_path):
+    left_path, right_path = tmp_path / "left.parquet", tmp_path / "right.parquet"
+    pd.DataFrame({"key": [1, 1, None], "left": ["a", "b", "n"]}).to_parquet(left_path)
+    pd.DataFrame({"key": [1, None], "right": ["x", "z"]}).to_parquet(right_path)
+    left, right = ActiveDataset.open_file(left_path), ActiveDataset.open_file(right_path)
+    concatenated = concat_active([left, right], "all")
+    assert concatenated.row_count() == 5
+    joined = join_active([left, right], ["key"], "inner")
+    result = joined.page(limit=20)
+    assert len(result) == 3  # 2x key=1 plus the null-safe match
+    assert result["right"].tolist().count("x") == 2
+    assert "z" in result["right"].tolist()
+    assert len(joined.dependencies) == 2
 
 
 def test_merge_prepares_only_chosen_datasets():

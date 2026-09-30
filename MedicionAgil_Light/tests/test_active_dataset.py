@@ -195,3 +195,23 @@ def test_distinct_values_reads_beyond_preview_with_limit(tmp_path):
     active = ActiveDataset.open_file(source)
     assert active.distinct_values("group") == ["a", "b"]
     assert active.distinct_values("group", limit=1) is None
+
+
+def test_typed_distinct_cursor_preserves_null_and_empty_string():
+    active = ActiveDataset.from_frame(pd.DataFrame(
+        {"value": [None, "", "(vacío)", "a", "b", "c"]}))
+    first = active.search_distinct_values("value", limit=3)
+    second = active.search_distinct_values(
+        "value", limit=3, cursor=first["next_cursor"])
+    assert first["has_more"] is True
+    combined = [*first["values"], *second["values"]]
+    assert None in combined and "" in combined and "(vacío)" in combined
+    with pytest.raises(ValueError, match="cursor"):
+        active.with_filters({"value": ["a"]}).search_distinct_values(
+            "value", limit=3, cursor=first["next_cursor"])
+
+
+def test_page_lookahead_is_internal_to_public_limit():
+    active = ActiveDataset.from_frame(pd.DataFrame({"value": range(4)}))
+    assert len(active.page(limit=2, lookahead=True)) == 3
+    assert len(active.page(limit=2, lookahead=False)) == 2

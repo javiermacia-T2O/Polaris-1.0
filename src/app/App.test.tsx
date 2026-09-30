@@ -15,4 +15,5 @@ test("muestra el estado vacío de datos", async () => {
   render(<QueryClientProvider client={new QueryClient()}><App /></QueryClientProvider>);
   expect(await screen.findByText("Aún no hay datasets")).toBeInTheDocument();
   expect(screen.getAllByRole("button", { name: /Abrir archivo/ })[0]).toBeEnabled();
+  expect(screen.queryByRole("tab", { name: "Constructor de tablas" })).not.toBeInTheDocument();
 });

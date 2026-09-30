@@ -45,7 +45,9 @@ def _base_dir() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-CACHE_DIR = _base_dir() / "output" / "cache"
+from core.cache_store import get_cache_store
+
+CACHE_DIR = get_cache_store().layout.reusable
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -484,8 +486,11 @@ def _cache_metadata_path(cache: Path) -> Path:
 
 def _source_metadata(src: Path) -> dict:
     stat = src.stat()
-    return {"source": str(src.resolve()).casefold(),
-            "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+    return {"format_version": 2,
+            "source": str(src.resolve()).casefold(),
+            "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
+            "reader": {"engine": "duckdb", "sample_size": 20480,
+                       "ignore_errors": False}}
 
 
 def _row_count_path(src: Path) -> Path:
@@ -549,7 +554,9 @@ def _write_source_cache(df: pd.DataFrame, src: Path, cache: Path):
         to_parquet(df, temp)
         if _source_metadata(src) != before:
             raise RuntimeError("El archivo de origen cambió durante el cacheo")
-        meta_temp.write_text(json.dumps(before), encoding="utf-8")
+        output = temp.stat()
+        meta_temp.write_text(json.dumps({"source": before,
+            "output_size": output.st_size, "query_version": 1}), encoding="utf-8")
         os.replace(temp, cache)
         os.replace(meta_temp, meta)
     finally:
@@ -575,7 +582,9 @@ def is_cached(src: Path, verbose: bool = False) -> bool:
         if verbose:
             print(f"[cache] {p.name}: {size_mb:.1f} MB")
 
-        return p.stat().st_size > 0 and stored == current
+        expected = stored.get("source", stored)
+        return (p.stat().st_size > 0 and expected == current
+                and stored.get("output_size", p.stat().st_size) == p.stat().st_size)
 
     except Exception as e:
         print(f"[cache] Error comprobando: {e}")

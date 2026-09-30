@@ -28,6 +28,15 @@ La comunicación Tauri ↔ Python es **JSON-lines sobre stdin/stdout**, sin
 puertos de red ni HTTP. El canal es asíncrono, multiplexado, cancelable y
 observable (ver `docs/IPC.md`).
 
+## Datos masivos y preparación
+
+La pestaña **Datos** integra preview, tipado por cabecera y constructor de
+tablas. CSV/Parquet se navegan desde disco con páginas acotadas; el conteo no
+bloquea la primera vista y una conversión Parquet opcional se ejecuta en
+segundo plano. Filtros, orden, tablas, exportaciones y análisis comparten el
+gestor de recursos y la cancelación IPC. Los resultados agregados y joins se
+materializan atómicamente en Parquet para paginar sin recalcular.
+
 ## Arranque
 
 El arranque está coordinado por eventos reales (ver `docs/IPC.md` §9):

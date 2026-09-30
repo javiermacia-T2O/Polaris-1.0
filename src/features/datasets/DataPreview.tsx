@@ -21,7 +21,6 @@ export function DataPreview({ datasetId, totalRows, totalRowsApproximate = false
     queryKey: ["preview", datasetId, offset, limit, sort],
     queryFn: ({ signal }) => api.tablePage(datasetId, offset, limit,
       sort ? [sort] : [], { signal }),
-    refetchInterval: (query) => query.state.data?.total_rows_approximate ? 1000 : false,
   });
   const total = preview.data?.total_rows ?? totalRows;
   const approximate = preview.data?.total_rows_approximate ?? totalRowsApproximate;

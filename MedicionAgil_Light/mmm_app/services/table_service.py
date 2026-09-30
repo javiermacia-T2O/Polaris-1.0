@@ -7,6 +7,7 @@ siempre los registros temporales de DuckDB.
 import time as _time
 from collections import OrderedDict
 import hashlib
+import threading
 
 import pandas as pd
 
@@ -61,22 +62,25 @@ def _is_numeric_type(dataset: ActiveDataset, column: str,
 
 _PREVIEW_CACHE = OrderedDict()
 _PIVOT_CACHE = OrderedDict()
+_CACHE_LOCK = threading.RLock()
 
 
 def _cached(cache, key, loader, maximum=32):
-    if key in cache:
-        cache.move_to_end(key)
-        log_debug("QUERY", "cache HIT", key=key[:12])
-        return cache[key]
+    with _CACHE_LOCK:
+        if key in cache:
+            cache.move_to_end(key)
+            log_debug("QUERY", "cache HIT", key=key[:12])
+            return cache[key]
     log_debug("QUERY", "cache MISS", key=key[:12])
     value = loader()
     if (isinstance(value, pd.DataFrame)
             and value.memory_usage(deep=True).sum() > 2 * 1024**2):
         log_debug("QUERY", "preview cache SKIP oversized", key=key[:12])
         return value
-    cache[key] = value
-    if len(cache) > maximum:
-        cache.popitem(last=False)
+    with _CACHE_LOCK:
+        cache[key] = value
+        if len(cache) > maximum:
+            cache.popitem(last=False)
     return value
 
 
@@ -115,21 +119,11 @@ def _recipe_source(dataset: ActiveDataset, recipe: TableRecipe):
                 expressions.append(
                     f'CAST(CAST({quoted} AS VARCHAR) AS TIMESTAMP) AS {quoted}')
             elif kind == "categorica":
-                expressions.append(
-                    f"COALESCE(CAST({quoted} AS VARCHAR), '(vacío)') AS {quoted}")
+                expressions.append(f"CAST({quoted} AS VARCHAR) AS {quoted}")
             else:
                 expressions.append(quoted)
         source = f"(SELECT {', '.join(expressions)} FROM {source}) AS _typed"
     return filtered, selected, source, where, filtered._params(params)
-
-
-def _pivot_key_expression(columns) -> str:
-    """Combine one or more pivot columns into a single deterministic key."""
-    parts = []
-    for column in columns:
-        quoted = f'"{_sql_ident(column)}"'
-        parts.append(f"COALESCE(CAST({quoted} AS VARCHAR), '(vacío)')")
-    return " || ' | ' || ".join(parts)
 
 
 def _pivot_categories(dataset, recipe, columns, source, where, params,
@@ -145,27 +139,31 @@ def _pivot_categories(dataset, recipe, columns, source, where, params,
                               recipe.column_types, sample_rows))
                          .encode("utf-8")).hexdigest()
     def load():
-        expression = _pivot_key_expression(columns)
         category_source = f"{source}{where}"
+        expressions = ", ".join(f'"{_sql_ident(column)}"' for column in columns)
         if sample_rows is not None:
-            # The bounded sample already projects the combined key, so the
-            # outer query must read that alias instead of the raw columns.
             category_source = (
-                f"(SELECT {expression} AS _pivot_key FROM {category_source} "
+                f"(SELECT {expressions} FROM {category_source} "
                 f"LIMIT {sample_rows}) AS _pivot_sample")
-            expression = "_pivot_key"
         rows = db_engine.get_conn().execute(
-            f'SELECT DISTINCT {expression} FROM {category_source} '
-            f'ORDER BY 1 LIMIT 51', params).fetchall()
+            f'SELECT DISTINCT {expressions} FROM {category_source} '
+            f'ORDER BY {", ".join(f"{index + 1} NULLS FIRST" for index in range(len(columns)))} '
+            'LIMIT 51', params).fetchall()
         if len(rows) > 50:
             raise MemoryError("Pivot con más de 50 columnas; filtra sus valores")
-        return tuple(row[0] for row in rows)
+        return tuple(tuple(row) for row in rows)
     return _cached(_PIVOT_CACHE, key, load)
 
 
 def _category_label(category) -> str:
     """Keep null category headings readable and deterministic."""
-    return "(vacío)" if category is None else str(category)
+    def component(value):
+        if value is None:
+            return "(vacío)"
+        text = str(value)
+        return f'"{text}"' if text == "(vacío)" or " | " in text else text
+    values = category if isinstance(category, tuple) else (category,)
+    return " | ".join(component(value) for value in values)
 
 
 def _aggregate_expression(metric: str, aggregation: str) -> str:
@@ -215,6 +213,7 @@ def compile_table(dataset: ActiveDataset, recipe: TableRecipe,
     # need their own LIMIT (a heading-only preview keeps one synthetic row), so
     # track it here to avoid emitting an invalid double LIMIT clause.
     limit_applied = False
+    pivot_params = []
     if blank_column_preview:
         categories = _pivot_categories(filtered, recipe, recipe.columns,
                                        source, where, params,
@@ -276,9 +275,11 @@ def compile_table(dataset: ActiveDataset, recipe: TableRecipe,
                     "Usa 'count' para valores textuales o marca la columna "
                     "como número si su contenido es convertible.")
             if pivot and metric_pivoted:
-                pivot_key = _pivot_key_expression(recipe.columns)
                 for category in categories:
-                    condition = (f"{pivot_key} = '{_sql_escape(category)}'")
+                    condition = " AND ".join(
+                        f'"{_sql_ident(column)}" IS NOT DISTINCT FROM ?'
+                        for column in recipe.columns)
+                    pivot_params.extend(category)
                     term = f"CASE WHEN {condition} THEN {metric} END"
                     expression = _pivot_aggregate_expression(term, aggregation)
                     label = (_category_label(category)
@@ -330,7 +331,8 @@ def compile_table(dataset: ActiveDataset, recipe: TableRecipe,
     if preview:
         if not limit_applied:
             sql += " LIMIT 20"
-    return sql, tuple(params), approximate
+    # Placeholders in SELECT precede placeholders in the nested FROM/WHERE.
+    return sql, tuple([*pivot_params, *params]), approximate
 
 
 def build_table_view(dataset: ActiveDataset, recipe: TableRecipe):

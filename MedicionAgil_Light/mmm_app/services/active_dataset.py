@@ -197,6 +197,8 @@ class ActiveDataset:
         source = Path(self.source)
         cache = engine.parquet_path_for(source)
         cache.parent.mkdir(parents=True, exist_ok=True)
+        from core.cache_store import get_cache_store
+        get_cache_store().ensure_space(source.stat().st_size)
         # Reserve for the source-sized temporary file plus free space for OS.
         free = shutil.disk_usage(cache.parent).free
         if free < source.stat().st_size * 2:
@@ -216,7 +218,12 @@ class ActiveDataset:
         if engine._source_metadata(source) != before:
             cache.unlink(missing_ok=True)
             raise RuntimeError("El origen cambió durante la conversión")
-        write_json_atomic(engine._cache_metadata_path(cache), before)
+        stat = cache.stat()
+        write_json_atomic(engine._cache_metadata_path(cache), {
+            "source": before, "output_size": stat.st_size,
+            "query_version": 1,
+            "schema": list(zip(self.columns, self.types)),
+        })
         return cache
 
     def with_filters(self, filters: dict[str, set | list | tuple]) -> "ActiveDataset":
