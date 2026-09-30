@@ -5,6 +5,57 @@ sesión. No borrar entradas: lo completado queda como historial.
 
 ## Tareas completadas
 
+- **FASE 2 — Arranque coordinado por eventos + splash profesional** (2026-09-30):
+  - **Gate FASE 1 (PASO 0)**: sidecar real PyInstaller `--onedir` reconstruido
+    y desplegado en `src-tauri/target/debug/sidecar/`. `scripts/gate_fase1.py`
+    PASS: `health` nunca bloquea por una operación pesada (p50 4.0 ms), la
+    cancelación responde (p50 510 ms), sin respuestas duplicadas (57/0),
+    reinicio tras caída y sin huérfanos al cerrar.
+  - **Splash independiente**: `public/splash.html` es HTML plano (sin React,
+    sin bundler, sin red) que pinta el primer frame desde estilos inline, así
+    que no hay destello blanco/azul. Escucha `startup://stage` y
+    `startup://failed`; ofrece Reintentar/Detalles/Salir.
+  - **Ventana principal oculta**: `main` arranca con `visible: false` y solo se
+    muestra cuando motor y frontend están listos.
+  - **`StartupCoordinator`** con estados `STARTING`, `SPLASH_READY`,
+    `ENGINE_STARTING`, `ENGINE_READY`, `FRONTEND_LOADING`, `FRONTEND_READY`,
+    `READY`, `FAILED`. Cada transición la dispara un evento real (efecto React,
+    respuesta `health`, carga de ventana); **ningún temporizador** decide la
+    disponibilidad.
+  - **`READY` idempotente**: `reveal_once()` usa un `AtomicBool` con `swap`, de
+    modo que dos señales simultáneas revelan la ventana una sola vez.
+  - **Prewarm del sidecar** durante el `setup` de Tauri (no lo dispara un
+    `api.health()` de React), en paralelo con la carga del webview.
+  - **Watchdog de arranque** con timeout de 45 s y reintento sin duplicar
+    procesos (`retry_startup` detiene el sidecar parcial antes de relanzarlo).
+  - **Tareas no críticas diferidas**: el frontend señala `frontend_ready` en
+    cuanto el shell está montado; análisis, diagnósticos y cachés cargan
+    después, con la ventana ya visible.
+  - **PyInstaller `--onedir` preservado**; sin regresión de FASE 1.
+  - Tests: `cargo test --lib` 20/20 (incluye casos 2–8, 10–14 del plan),
+    `src/test/frontendReady.test.ts` 3/3, Vitest total 4/4, `tsc -b` limpio.
+  - Arranque release medido: `setup 2450 ms`, `FRONTEND_READY 2835 ms`,
+    `ENGINE_READY 7086 ms`, `READY 7121 ms`; sin huérfanos al cerrar.
+
+- **FASE 1 — IPC asíncrono, multiplexado, cancelable y observable** (2026-09-29):
+  - `sidecar.py` reescrito: hilo lector, pools `interactive` (2) y
+    `background` (1), operaciones de control inline, `_RequestRegistry` con
+    cancelación vía DuckDB `interrupt()`, `_Writer` con lock y observabilidad
+    por petición (`queue_ms`, `execution_ms`, `total_ms`, `status`,
+    `cancelled`, `priority`).
+  - `application.py`: `cancel`/`progress` propagados a las operaciones pesadas
+    y puente `_bridge_cancel` hacia `JobManager`.
+  - `lib.rs`: mapa de pendientes + hilo lector permanente, `route_line()`
+    puro, `SidecarManager` con `ensure`/`restart`/`stop`, comando async
+    `sidecar_request` con `spawn_blocking`, comando `cancel_request` y evento
+    `sidecar://progress`.
+  - `api.ts`: `RequestOptions`, `SidecarError`, `cancelRequest`, progreso y
+    opciones en las operaciones pesadas (compatible hacia atrás).
+  - Tests: `test_sidecar_concurrency.py` (10), 3 tests nuevos de Rust,
+    `docs/IPC.md` nuevo y `docs/PROJECT.md` actualizado.
+  - Verificación: `cargo test --lib` 5/5; Python 260 pasan, 1 skip, 2 fallos
+    preexistentes de Tkinter; `tsc -b` limpio; Vitest 1/1.
+
 - Paridad React/Tauri: se completó la migración de tres capacidades del menú
   Tkinter al frontend React con contratos tipados sobre el sidecar Python.
   - **Unir datasets** (`merge_datasets`): concat (todas/comunes) y merge

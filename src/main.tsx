@@ -1,45 +1,53 @@
 import { StrictMode, useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 import { App } from "./app/App";
-import { api } from "./shared/api";
 import "./styles.css";
-
-declare global {
-  interface Window {
-    __polarisBoot?: { done: () => void };
-  }
-}
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 5_000 } },
 });
 
-/** Waits for the local engine to answer, then dismisses the boot splash. */
-function BootGate({ children }: { children: React.ReactNode }) {
-  const health = useQuery({
-    queryKey: ["health"],
-    queryFn: api.health,
-    retry: 12,
-    retryDelay: 400,
-    staleTime: Infinity,
+let signalled = false;
+
+/**
+ * Tells the Rust StartupCoordinator that the shell is mounted.
+ *
+ * `frontend_ready` means the React tree rendered and the navigation is
+ * available — not that every analysis, dataset count or diagnostic finished.
+ * Those are deferred and load after the main window is already visible.
+ */
+function signalFrontendReady() {
+  if (signalled) return;
+  signalled = true;
+  invoke("frontend_ready").catch(() => {
+    // Running outside Tauri (e.g. `vite` in a browser): nothing to signal.
   });
+}
 
+/**
+ * Reports readiness from a real React commit.
+ *
+ * A passive effect runs after the tree is committed, which is the honest
+ * "the shell is mounted" milestone. `requestAnimationFrame` is deliberately
+ * not used: the main window starts hidden, and WebView2 pauses animation
+ * frames for non-visible windows, so a rAF-based signal would never fire.
+ */
+function ReadySignal() {
   useEffect(() => {
-    if (!health.isSuccess && !health.isError) return;
-    const timer = window.setTimeout(() => window.__polarisBoot?.done(), health.isSuccess ? 320 : 0);
-    return () => window.clearTimeout(timer);
-  }, [health.isSuccess, health.isError]);
-
-  return <>{children}</>;
+    signalFrontendReady();
+  }, []);
+  return null;
 }
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BootGate>
-        <App />
-      </BootGate>
+      <ReadySignal />
+      <App />
     </QueryClientProvider>
   </StrictMode>,
 );
+
+export { queryClient, signalFrontendReady };

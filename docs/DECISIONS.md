@@ -11,6 +11,92 @@ como nueva entrada que la sustituye.
 
 ## Decisiones registradas
 
+### 2026-09-30 - Splash HTML plano, independiente de React
+
+**Decisión**: la ventana `splash` carga `public/splash.html`, un documento
+HTML con estilos inline y sin bundler, React ni red.
+
+**Motivo**: el splash debe pintar su primer frame antes de que el webview
+principal haya cargado el bundle. Un splash basado en React heredaría el
+mismo coste de arranque que intenta ocultar y podría mostrar un destello
+blanco/azul. El HTML plano garantiza el primer frame desde el propio
+documento y habla con Rust por el puente global (`withGlobalTauri`).
+
+### 2026-09-30 - Disponibilidad por eventos reales, nunca por temporizador
+
+**Decisión**: `StartupCoordinator` solo avanza cuando ocurre un hito real: el
+splash pintó (`splash_ready`), el motor respondió `health` (`engine_ready`) y
+el shell React se montó (`frontend_ready`). La ventana principal se revela
+cuando ambos están listos.
+
+**Motivo**: un temporizador o un porcentaje simulado mostraría la ventana
+antes de que la app sea usable. Los hitos reales hacen que `READY` signifique
+"la app puede usarse", no "ha pasado el tiempo estimado".
+
+### 2026-09-30 - `READY` idempotente con `AtomicBool::swap`
+
+**Decisión**: `reveal_once()` revela la ventana solo la primera vez que motor
+y frontend están listos, usando `swap(true)` sobre un `AtomicBool`.
+
+**Motivo**: el motor y el frontend pueden reportar disponibilidad casi a la
+vez desde hilos distintos. `swap` garantiza que exactamente una señal gane la
+carrera, de modo que la ventana nunca se muestra ni se cierra dos veces.
+
+### 2026-09-30 - Prewarm del sidecar en el `setup` de Tauri
+
+**Decisión**: el sidecar se arranca durante el `setup` de Tauri, en paralelo
+con la carga del webview, en lugar de esperar a un `api.health()` de React.
+
+**Motivo**: el arranque del sidecar congelado es la parte más lenta del TTI.
+Lanzarlo en `setup` solapa ese coste con la carga del frontend en vez de
+sumarlo, y mantiene el pipeline de FASE 1 (multiplexación, cancelación,
+reinicio) intacto.
+
+### 2026-09-30 - Feature `custom-protocol` explícita en `Cargo.toml`
+
+**Decisión**: declarar la feature `custom-protocol = ["tauri/custom-protocol"]`
+y compilar el release con `--features custom-protocol`.
+
+**Motivo**: sin ella, un `cargo build --release` deja el webview apuntando a
+`build.devUrl` (`http://localhost:1420`) y la app empaquetada nunca carga el
+frontend embebido. `tauri build` la activa sola; un `cargo build` manual debe
+pasarla explícitamente.
+
+### 2026-09-29 - IPC asíncrono sobre stdin/stdout con JSON-lines
+
+**Decisión**: mantener stdin/stdout + JSON-lines como transporte Tauri ↔
+Python, pero convertirlo en asíncrono, multiplexado, cancelable y observable.
+
+**Motivo**: no introduce puertos de red ni HTTP (menor superficie y sin
+dependencias), el host ya controla el proceso y el protocolo es trivial de
+auditar. Se descartó HTTP/localhost por seguridad y complejidad, y asyncio
+porque el motor científico es síncrono y DuckDB es thread-safe por conexión.
+
+### 2026-09-29 - Operaciones de control inline en el hilo lector
+
+**Decisión**: `health`, `cancel_request`, `shutdown`, `get_job_status`,
+`cancel_job` y `list_jobs` se ejecutan inline, nunca en los pools de trabajo.
+
+**Motivo**: garantiza que la UI pueda consultar estado y cancelar aunque todos
+los workers estén ocupados con una operación larga.
+
+### 2026-09-29 - Cancelación real vía DuckDB `interrupt()`
+
+**Decisión**: cancelar una petición marca un `threading.Event` y llama a
+`conn.interrupt()` sobre la conexión del worker.
+
+**Motivo**: aborta la consulta en curso de verdad, en lugar de esperar a que
+termine. Las operaciones no cancelables (carga atómica) se documentan como
+tales en `docs/IPC.md`.
+
+### 2026-09-29 - `spawn_blocking` para la espera bloqueante en Rust
+
+**Decisión**: el comando `sidecar_request` ejecuta la espera bloqueante en
+`tauri::async_runtime::spawn_blocking`.
+
+**Motivo**: la espera nunca ocupa el runtime async ni el hilo de UI, de modo
+que la interfaz permanece fluida mientras Python trabaja.
+
 ### 2026-09-28 - Reutilizar el recolector de tablas
 
 **Decisión**: recorrer diccionarios, listas y tuplas con el mismo recolector

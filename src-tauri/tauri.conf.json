@@ -10,17 +10,38 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "withGlobalTauri": true,
     "security": { "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'" },
-    "windows": [{
-      "title": "Polaris",
-      "width": 1440,
-      "height": 900,
-      "minWidth": 960,
-      "minHeight": 640,
-      "resizable": true,
-      "fullscreen": false,
-      "backgroundColor": "#0b1f3a"
-    }]
+    "windows": [
+      {
+        "label": "splash",
+        "url": "splash.html",
+        "title": "Polaris",
+        "width": 420,
+        "height": 300,
+        "resizable": false,
+        "decorations": false,
+        "transparent": false,
+        "center": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": true,
+        "visible": true,
+        "backgroundColor": "#0b1f3a"
+      },
+      {
+        "label": "main",
+        "title": "Polaris",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "fullscreen": false,
+        "visible": false,
+        "backgroundColor": "#0b1f3a"
+      }
+    ]
   },
   "bundle": {
     "active": true,

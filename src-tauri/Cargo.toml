@@ -9,6 +9,13 @@ edition = "2021"
 name = "medicion_agil_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Without this feature Tauri keeps pointing the webview at `build.devUrl`
+# (http://localhost:1420) even in a release build, so the packaged app would
+# never load the embedded frontend. `tauri build` enables it automatically;
+# a plain `cargo build --release` must pass `--features custom-protocol`.
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2.7.0", features = [] }
 
