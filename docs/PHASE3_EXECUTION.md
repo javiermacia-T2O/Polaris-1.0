@@ -96,6 +96,77 @@ Resultado: **269 passed, 1 failed, 1 skipped** (64.93 s).
   son ambientales, no regresiones de este bloque.
 - `tests/test_resource_manager.py` en aislamiento: 28 passed.
 
+## Ajustes de UX y rendimiento (post-Bloque 2)
+
+Encargo del usuario: la app tardaba en mostrar el splash, el constructor de
+tablas fallaba por límite de memoria, aplicar cambios era lento, el botón de
+filtros y el de unir no funcionaban, y se pedía fusionar las pestañas "Datos" y
+"Constructor de tablas" en una sola con dos secciones (vista previa y modelado)
+más un desplegable de tipo de formato por columna.
+
+### 1. Límites de memoria dinámicos (sin topes fijos)
+
+- `core/memory_budget.py`:
+  - `app_limit_bytes`: `available − max(1.5 GiB, 25% available)`; se eliminó el
+    tope del 40% del total y el tope de 8 GiB.
+  - `duckdb_limit_bytes`: 60% del presupuesto de app (antes 35%), suelo 256 MiB.
+  - `table_query_duckdb_limit_bytes`: se eliminó el tope de 3 GiB y el del 55%.
+  - `safe_merge_row_limit`: el límite lo marca la memoria disponible, pero se
+    conserva `MERGE_SAFETY_ROW_LIMIT = 5_000_000` como **guarda de seguridad
+    contra uniones que explotan por producto cartesiano** (no es un tope de
+    memoria). El límite efectivo es `min(5_000_000, filas_por_memoria)`.
+- `core/resource_manager.py`: `profile_for` reescalado (<12 GiB → 256/512 MiB,
+  2 hilos; 12–<24 GiB → 384 MiB/1 GiB, 4 hilos; >=24 GiB → 512 MiB/2 GiB,
+  8 hilos), con techos `max(2/4/8 GiB, 50/60/70% total)`.
+- Tests actualizados: `test_memory_budget.py`, `test_table_result_cache.py`,
+  `test_resource_manager.py`.
+
+### 2. Fusión de pestañas "Datos" + "Constructor de tablas"
+
+- `src/app/store.ts`: `Screen` pierde `"tabla"`; se añade `mergeOpen` +
+  `setMergeOpen`.
+- `src/app/App.tsx`: se elimina la pestaña y el render de `TableScreen`.
+- `src/features/tables/TableBuilder.tsx` (nuevo): componente embebible de
+  modelado (roles, agregaciones, preview, build, filtros por columna).
+- `src/features/datasets/DatasetsScreen.tsx`: dos secciones `fused-section`
+  ("Vista previa" y "Modelado") + `MergePanel`. El panel de filtros usa
+  `api.columnValues` (lista completa de valores distintos) en lugar de los 20
+  ejemplos del perfil.
+- `src/shared/columnTypes.ts` (nuevo): `TYPE_OPTIONS`, `TYPE_LABELS`,
+  `guessType` compartidos.
+- `src/styles.css`: estilos `.fused-section` y `.section-heading`.
+
+### 3. Desplegable de tipo por columna
+
+Integrado en el panel "Tipos de columna" de la sección de vista previa: cada
+columna del dataset tiene un `<select>` con `TYPE_OPTIONS` para corregir la
+asignación automática.
+
+### 4. Splash rápido
+
+- Causa raíz: el `<script>` inline del splash estaba bloqueado por la CSP
+  `default-src 'self'`, por lo que nunca avanzaba. Se extrajo a
+  `public/splash.js` y se registraron los listeners `startup://stage` /
+  `startup://failed` **antes** de `invoke("splash_ready")`.
+- `python/medicion_core/sidecar.py`: nueva operación inline `warmup` que
+  responde de inmediato y precarga el stack científico en segundo plano.
+- `src-tauri/src/lib.rs`: `prewarm_engine` lanza un `warmup` fire-and-forget
+  tras marcar el motor listo.
+
+### 5. Botón "Unir" de la sidebar
+
+- `src/app/Sidebar.tsx`: el botón ahora hace `setScreen("datos")` +
+  `setMergeOpen(true)`.
+- `src/features/datasets/MergePanel.tsx`: el estado abierto/cerrado vive en el
+  store; con menos de 2 datasets muestra una pista en lugar de `null`.
+
+### Verificación
+
+- Suite completa: **287 passed, 2 failed, 1 skipped** (45.67 s). Los 2 fallos
+  son los ambientales de `test_light_geox_layout.py` (geometría Tk).
+- `npm run typecheck`: limpio. `npm test`: 2 archivos, 4 tests OK.
+- `cargo test --lib`: 20 passed.
+
 ## Siguiente acción exacta
 
 Bloque 3: dataset, caché y navegación (`core/loader.py`, `core/atomic.py`,

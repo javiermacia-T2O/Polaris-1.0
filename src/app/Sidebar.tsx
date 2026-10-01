@@ -115,7 +115,11 @@ export function Sidebar() {
       </button>
       <div className="row-2">
         <button className="quiet-button" onClick={() => load.mutate()} disabled={load.isPending}>Añadir</button>
-        <button className="quiet-button" onClick={() => useUiStore.getState().setScreen("datos")}>Unir</button>
+        <button className="quiet-button" onClick={() => {
+          const store = useUiStore.getState();
+          store.setScreen("datos");
+          store.setMergeOpen(true);
+        }}>Unir</button>
       </div>
       <label className="field-label">Dataset activo
         <select value={active?.dataset_id ?? ""} onChange={(event) => setActiveDataset(event.target.value || null)}>

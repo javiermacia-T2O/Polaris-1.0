@@ -576,6 +576,18 @@ fn prewarm_engine(manager: Arc<SidecarManager>, coordinator: Arc<StartupCoordina
     match result {
         Ok(response) if response.get("ok").and_then(Value::as_bool).unwrap_or(false) => {
             coordinator.mark_engine_ready(&app);
+            // The engine answered `health` without loading the scientific
+            // stack (pandas/DuckDB). Ask it to warm up in the background so
+            // the first real data operation does not pay the import cost
+            // while the user waits. Fire-and-forget: a failure here is
+            // harmless, the real operation will report it.
+            let _ = manager.request(
+                None,
+                "warmup",
+                json!({}),
+                "background",
+                CONTROL_TIMEOUT,
+            );
         }
         Ok(response) => {
             let message = response

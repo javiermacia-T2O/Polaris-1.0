@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type Screen = "datos" | "tabla" | "analisis" | "resultados" | "graficos" | "diagnostico";
+export type Screen = "datos" | "analisis" | "resultados" | "graficos" | "diagnostico";
 
 export type StatusKind = "info" | "success" | "warning" | "error";
 export type Status = { message: string; kind: StatusKind } | null;
@@ -12,6 +12,7 @@ type UiState = {
   selectedAnalysisId: string | null;
   status: Status;
   columnTypes: Record<string, string>;
+  mergeOpen: boolean;
   setScreen: (screen: Screen) => void;
   setActiveDataset: (datasetId: string | null) => void;
   setActiveResult: (resultId: string | null) => void;
@@ -19,6 +20,7 @@ type UiState = {
   setStatus: (status: Status) => void;
   setColumnTypes: (types: Record<string, string>) => void;
   setColumnType: (column: string, type: string) => void;
+  setMergeOpen: (open: boolean) => void;
 };
 
 export const useUiStore = create<UiState>((set) => ({
@@ -28,6 +30,7 @@ export const useUiStore = create<UiState>((set) => ({
   selectedAnalysisId: null,
   status: null,
   columnTypes: {},
+  mergeOpen: false,
   setScreen: (screen) => set({ screen }),
   setActiveDataset: (activeDatasetId) => set({ activeDatasetId }),
   setActiveResult: (activeResultId) => set({ activeResultId }),
@@ -37,4 +40,5 @@ export const useUiStore = create<UiState>((set) => ({
   setColumnType: (column, type) => set((state) => ({
     columnTypes: { ...state.columnTypes, [column]: type },
   })),
+  setMergeOpen: (mergeOpen) => set({ mergeOpen }),
 }));

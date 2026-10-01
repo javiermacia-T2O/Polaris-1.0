@@ -18,6 +18,8 @@ dist/
 output/
 logs/
 *.log
+release/
+MedicionAgil_Light/
 
 # Frontend / Tauri
 node_modules/

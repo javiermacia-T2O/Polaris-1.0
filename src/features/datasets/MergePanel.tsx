@@ -7,7 +7,7 @@ import { CheckboxList } from "../../shared/CheckboxList";
 
 export function MergePanel({ datasets }: { datasets: DatasetMetadata[] }) {
   const client = useQueryClient();
-  const { setActiveDataset } = useUiStore();
+  const { setActiveDataset, mergeOpen, setMergeOpen } = useUiStore();
   const [selected, setSelected] = useState<string[]>([]);
   const [operation, setOperation] = useState<"concat" | "merge">("concat");
   const [mode, setMode] = useState<"all" | "common">("all");
@@ -15,7 +15,8 @@ export function MergePanel({ datasets }: { datasets: DatasetMetadata[] }) {
   const [keys, setKeys] = useState<string[]>([]);
   const [name, setName] = useState("");
   const [notice, setNotice] = useState("");
-  const [open, setOpen] = useState(false);
+  const open = mergeOpen;
+  const setOpen = setMergeOpen;
 
   const commonColumns = useMemo(() => {
     const chosen = datasets.filter((item) => selected.includes(item.dataset_id));
@@ -42,13 +43,17 @@ export function MergePanel({ datasets }: { datasets: DatasetMetadata[] }) {
   const toggle = (id: string) => setSelected((current) =>
     current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
 
-  if (datasets.length < 2) return null;
+  if (datasets.length < 2) return <article className="panel merge-panel">
+    <div className="panel-head"><div><h2>Unir datasets</h2>
+      <p>Combina dos o más datasets del pool en uno nuevo.</p></div></div>
+    <div className="empty-inline">Necesitas al menos dos datasets cargados para poder unirlos.</div>
+  </article>;
 
   return <article className="panel merge-panel">
     <div className="panel-head"><div><h2>Unir datasets</h2>
       <p>Combina dos o más datasets del pool en uno nuevo.</p></div>
       <div className="panel-actions">
-        <button className="quiet-button" onClick={() => setOpen((value) => !value)}>
+        <button className="quiet-button" onClick={() => setOpen(!open)}>
           {open ? "Ocultar" : "Mostrar"}</button>
       </div></div>
     {open && <div className="merge-grid">

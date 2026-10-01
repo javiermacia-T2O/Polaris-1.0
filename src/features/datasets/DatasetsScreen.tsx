@@ -1,26 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../shared/api";
 import { useUiStore } from "../../app/store";
 import { DataPreview } from "./DataPreview";
 import { MergePanel } from "./MergePanel";
+import { TableBuilder } from "../tables/TableBuilder";
 import { Loading } from "../../shared/Loading";
 import { CheckboxList } from "../../shared/CheckboxList";
-
-const TYPE_OPTIONS = [
-  { value: "numero", label: "Número" },
-  { value: "texto", label: "Texto" },
-  { value: "categorica", label: "Categoría" },
-  { value: "fecha", label: "Fecha" },
-  { value: "ignorar", label: "Ignorar" },
-];
-
-function guessType(type: string) {
-  if (/int|float|double|decimal|numeric|number/i.test(type)) return "numero";
-  if (/date|time|timestamp/i.test(type)) return "fecha";
-  if (/bool|category|object|string/i.test(type)) return "categorica";
-  return "texto";
-}
+import { TYPE_OPTIONS, guessType } from "../../shared/columnTypes";
 
 export function DatasetsScreen() {
   const client = useQueryClient();
@@ -45,13 +32,13 @@ export function DatasetsScreen() {
   });
 
   const profile = useQuery({
-    queryKey: ["profile", active?.dataset_id, filterColumn],
-    queryFn: () => api.columnProfile(active!.dataset_id, filterColumn),
+    queryKey: ["column-values", active?.dataset_id, filterColumn],
+    queryFn: () => api.columnValues(active!.dataset_id, filterColumn),
     enabled: Boolean(active?.dataset_id && filterColumn),
+    staleTime: 5 * 60 * 1000,
   });
 
-  const filterOptions = useMemo(() => (profile.data?.examples ?? [])
-    .map((value) => String(value)), [profile.data]);
+  const filterOptions = profile.data?.values ?? [];
 
   useEffect(() => {
     if (!columnsQuery.data) return;
@@ -109,6 +96,9 @@ export function DatasetsScreen() {
     onSuccess: async () => {
       setStatus({ message: "Filtro aplicado", kind: "success" });
       await client.invalidateQueries({ queryKey: ["datasets"] });
+      // Refresh the preview so the applied filter is visible immediately.
+      await client.invalidateQueries({ queryKey: ["preview"] });
+      await client.invalidateQueries({ queryKey: ["table-page"] });
     },
     onError: (error: Error) => setStatus({ message: `No se pudo filtrar: ${error.message}`, kind: "error" }),
   });
@@ -120,6 +110,8 @@ export function DatasetsScreen() {
       setFilterValues([]);
       setStatus({ message: "Filtros restablecidos", kind: "success" });
       await client.invalidateQueries({ queryKey: ["datasets"] });
+      await client.invalidateQueries({ queryKey: ["preview"] });
+      await client.invalidateQueries({ queryKey: ["table-page"] });
     },
     onError: (error: Error) => setStatus({ message: `No se pudo restablecer: ${error.message}`, kind: "error" }),
   });
@@ -127,7 +119,7 @@ export function DatasetsScreen() {
   if (datasets.isLoading) return <section><Loading label="Cargando datasets…" /></section>;
 
   if (!datasets.data?.length) return <section>
-    <header className="page-header"><div><p className="eyebrow">DATOS</p><h1>Datos</h1>
+    <header className="page-header"><div><p className="eyebrow">DATOS</p><h1>Datos y modelado</h1>
       <p>Carga un archivo para empezar a trabajar.</p></div></header>
     <div className="empty"><h2>Aún no hay datasets</h2>
       <p>Importa un CSV, Excel o Parquet para comenzar.</p>
@@ -137,9 +129,9 @@ export function DatasetsScreen() {
 
   return <section>
     <header className="page-header">
-      <div><p className="eyebrow">DATOS</p><h1>Datos</h1></div>
+      <div><p className="eyebrow">DATOS</p><h1>Datos y modelado</h1>
+        <p>Explora el dataset y constrúyelo en la misma vista.</p></div>
       <div className="toolbar-actions">
-        <span className="header-hint">Explora, tipa y filtra el dataset activo.</span>
         <button className="quiet-button" onClick={() => setPreviewKey((key) => key + 1)}>Refrescar vista</button>
         <button className="quiet-button" onClick={() => { setFilterValues([]); resetFilters.mutate(); }}
           disabled={!active || resetFilters.isPending}>Reset filtros</button>
@@ -165,58 +157,72 @@ export function DatasetsScreen() {
       </div>
     </div>
 
-    <div className="dataset-workspace">
-      <div className="dataset-main">
-        {active && <DataPreview key={`${active.dataset_id}-${previewKey}`} datasetId={active.dataset_id} totalRows={active.rows} totalRowsApproximate={active.rows_approximate} />}
-      </div>
-      <div className="column-panel">
-        <article className="panel">
-          <div className="panel-head"><div><h2>Tipos de columna</h2>
-            <p>{columnsQuery.data?.length ?? 0} columnas</p></div>
-            <div className="panel-actions">
-              {columnsQuery.isLoading && <Loading label="Leyendo columnas…" inline />}
-              <button className="quiet-button" onClick={() => {
-                if (!columnsQuery.data) return;
-                const next: Record<string, string> = {};
-                for (const column of columnsQuery.data) next[column.name] = guessType(column.type);
-                setColumnTypes(next);
-                setStatus({ message: "Tipos detectados", kind: "info" });
-              }}>Detectar</button>
-            </div></div>
-          <div className="column-list">
-            {columnsQuery.data?.map((column) => <div key={column.name} className="column-row">
-              <span className="column-name" title={column.name}>{column.name}</span>
-              <select value={columnTypes[column.name] ?? guessType(column.type)}
-                onChange={(event) => setColumnType(column.name, event.target.value)}>
-                {TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </select>
-            </div>)}
-          </div>
-        </article>
-      </div>
-      <div className="column-panel">
-        <article className="panel">
-          <div className="panel-head"><div><h2>Pivotado</h2>
-            <p>Filtra el dataset por valores de una columna.</p></div></div>
-          <div className="filter-controls">
-            <label className="field-label">Columna
-              <select value={filterColumn} onChange={(event) => { setFilterColumn(event.target.value); setFilterValues([]); }}>
-                <option value="">— Selecciona —</option>
-                {columnsQuery.data?.map((column) => <option key={column.name} value={column.name}>{column.name}</option>)}
-              </select></label>
-            {filterColumn && <CheckboxList options={filterOptions} selected={filterValues}
-              onChange={setFilterValues} emptyLabel="Sin valores de muestra." maxHeight={160} />}
-            <div className="row-2">
-              <button className="primary" onClick={() => applyFilters.mutate()}
-                disabled={!filterColumn || !filterValues.length || applyFilters.isPending}>
-                {applyFilters.isPending ? "Aplicando…" : "Aplicar"}</button>
-              <button className="quiet-button" onClick={() => resetFilters.mutate()}
-                disabled={!active || resetFilters.isPending}>Reset</button>
+    <section className="fused-section">
+      <h2 className="section-heading">Vista previa</h2>
+      <div className="dataset-workspace">
+        <div className="dataset-main">
+          {active && <DataPreview key={`${active.dataset_id}-${previewKey}`} datasetId={active.dataset_id} totalRows={active.rows} totalRowsApproximate={active.rows_approximate} />}
+        </div>
+        <div className="column-panel">
+          <article className="panel">
+            <div className="panel-head"><div><h2>Tipos de columna</h2>
+              <p>{columnsQuery.data?.length ?? 0} columnas</p></div>
+              <div className="panel-actions">
+                {columnsQuery.isLoading && <Loading label="Leyendo columnas…" inline />}
+                <button className="quiet-button" onClick={() => {
+                  if (!columnsQuery.data) return;
+                  const next: Record<string, string> = {};
+                  for (const column of columnsQuery.data) next[column.name] = guessType(column.type);
+                  setColumnTypes(next);
+                  setStatus({ message: "Tipos detectados", kind: "info" });
+                }}>Detectar</button>
+              </div></div>
+            <div className="column-list">
+              {columnsQuery.data?.map((column) => <div key={column.name} className="column-row">
+                <span className="column-name" title={column.name}>{column.name}</span>
+                <select value={columnTypes[column.name] ?? guessType(column.type)}
+                  onChange={(event) => setColumnType(column.name, event.target.value)}>
+                  {TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </div>)}
             </div>
-          </div>
-        </article>
+          </article>
+        </div>
+        <div className="column-panel">
+          <article className="panel">
+            <div className="panel-head"><div><h2>Filtros</h2>
+              <p>Filtra el dataset por valores de una columna.</p></div></div>
+            <div className="filter-controls">
+              <label className="field-label">Columna
+                <select value={filterColumn} onChange={(event) => { setFilterColumn(event.target.value); setFilterValues([]); }}>
+                  <option value="">— Selecciona —</option>
+                  {columnsQuery.data?.map((column) => <option key={column.name} value={column.name}>{column.name}</option>)}
+                </select></label>
+              {filterColumn && profile.isLoading && <Loading label="Leyendo valores…" inline />}
+              {filterColumn && profile.data?.truncated &&
+                <div className="empty-inline">Demasiados valores distintos; usa el buscador del dataset.</div>}
+              {filterColumn && !profile.isLoading && !profile.data?.truncated &&
+                <CheckboxList options={filterOptions} selected={filterValues}
+                  onChange={setFilterValues} emptyLabel="Sin valores." maxHeight={160} />}
+              <div className="row-2">
+                <button className="primary" onClick={() => applyFilters.mutate()}
+                  disabled={!filterColumn || !filterValues.length || applyFilters.isPending}>
+                  {applyFilters.isPending ? "Aplicando…" : "Aplicar"}</button>
+                <button className="quiet-button" onClick={() => resetFilters.mutate()}
+                  disabled={!active || resetFilters.isPending}>Reset</button>
+              </div>
+            </div>
+          </article>
+        </div>
       </div>
-    </div>
+    </section>
+
+    <section className="fused-section">
+      <h2 className="section-heading">Modelado</h2>
+      {active
+        ? <TableBuilder source={active} columns={columnsQuery.data ?? []} />
+        : <div className="empty-inline">Selecciona un dataset para modelarlo.</div>}
+    </section>
 
     <MergePanel datasets={datasets.data} />
   </section>;
