@@ -31,14 +31,6 @@ jobs:
           git switch -C codex/fase4-final-ui origin/codex/fase3-complete
           git rm fase4-part-*.b64 .github/workflows/apply-fase4-transfer.yml
           git apply --index "$RUNNER_TEMP/fase4-final.patch"
+          git rm .github/workflows/build-portable.yml
           git commit -m "feat(fase4): finalizar experiencia de datos y distribución Windows"
           git push origin codex/fase4-final-ui
-
-      - name: Remove transfer files from source branch
-        shell: bash
-        run: |
-          set -euo pipefail
-          git switch -C codex/fase3-complete origin/codex/fase3-complete
-          git rm fase4-part-*.b64 .github/workflows/apply-fase4-transfer.yml
-          git commit -m "chore: retirar aplicador temporal de Fase 4"
-          git push origin codex/fase3-complete
