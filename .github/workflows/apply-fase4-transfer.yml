@@ -1,0 +1,44 @@
+name: Apply Fase 4 transfer
+
+on:
+  push:
+    branches:
+      - codex/fase3-complete
+    paths:
+      - .github/workflows/apply-fase4-transfer.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out transfer commit
+        uses: actions/checkout@v4
+        with:
+          ref: codex/fase3-complete
+          fetch-depth: 0
+
+      - name: Publish final branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat fase4-part-*.b64 | base64 --decode > "$RUNNER_TEMP/fase4-final.patch.xz"
+          xz --decompress --stdout "$RUNNER_TEMP/fase4-final.patch.xz" > "$RUNNER_TEMP/fase4-final.patch"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C codex/fase4-final-ui origin/codex/fase3-complete
+          git rm fase4-part-*.b64 .github/workflows/apply-fase4-transfer.yml
+          git apply --index "$RUNNER_TEMP/fase4-final.patch"
+          git commit -m "feat(fase4): finalizar experiencia de datos y distribución Windows"
+          git push origin codex/fase4-final-ui
+
+      - name: Remove transfer files from source branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git switch -C codex/fase3-complete origin/codex/fase3-complete
+          git rm fase4-part-*.b64 .github/workflows/apply-fase4-transfer.yml
+          git commit -m "chore: retirar aplicador temporal de Fase 4"
+          git push origin codex/fase3-complete
