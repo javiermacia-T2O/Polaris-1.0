@@ -76,8 +76,8 @@ export function Sidebar() {
     onMutate: () => setStatus({ message: "Cerrando dataset…", kind: "info" }),
     onSuccess: async (_data, datasetId) => {
       if (activeDatasetId === datasetId) setActiveDataset(null);
-      setStatus({ message: "Dataset cerrado", kind: "success" });
       await client.invalidateQueries({ queryKey: ["datasets"] });
+      setStatus({ message: "Dataset cerrado", kind: "success" });
     },
     onError: (error: Error) => setStatus({ message: `No se pudo cerrar: ${error.message}`, kind: "error" }),
   });
@@ -86,9 +86,9 @@ export function Sidebar() {
     mutationFn: () => api.applyDateRange(active!.dataset_id, dateColumn, start || null, end || null),
     onMutate: () => setStatus({ message: "Aplicando filtro temporal…", kind: "info" }),
     onSuccess: async () => {
-      setStatus({ message: `Periodo aplicado: ${start || "inicio"} → ${end || "fin"}`, kind: "success" });
       await client.invalidateQueries({ queryKey: ["datasets"] });
       await client.invalidateQueries({ queryKey: ["preview", active?.dataset_id] });
+      setStatus({ message: `Periodo aplicado: ${start || "inicio"} → ${end || "fin"}`, kind: "success" });
     },
     onError: (error: Error) => setStatus({ message: error.message, kind: "error" }),
   });
@@ -97,9 +97,9 @@ export function Sidebar() {
     mutationFn: () => api.resetDateRange(active!.dataset_id),
     onMutate: () => setStatus({ message: "Restableciendo periodo…", kind: "info" }),
     onSuccess: async () => {
-      setStatus({ message: "Periodo restablecido", kind: "success" });
       await client.invalidateQueries({ queryKey: ["datasets"] });
       await client.invalidateQueries({ queryKey: ["preview", active?.dataset_id] });
+      setStatus({ message: "Periodo restablecido", kind: "success" });
     },
     onError: (error: Error) => setStatus({ message: error.message, kind: "error" }),
   });
@@ -111,13 +111,16 @@ export function Sidebar() {
 
     <div className="sidebar-scroll">
       <p className="section-title">01 · Archivo</p>
-      <p className="file-label">{active ? active.name : "(ninguno)"}</p>
       <button className="primary block" onClick={() => load.mutate()} disabled={load.isPending}>
         {load.isPending ? "Abriendo…" : "Abrir archivo"}
       </button>
       <div className="row-2">
         <button className="quiet-button" onClick={() => load.mutate()} disabled={load.isPending}>Añadir</button>
-        <button className="quiet-button" onClick={() => useUiStore.getState().setScreen("datos")}>Unir</button>
+        <button className="quiet-button" onClick={() => {
+          const store = useUiStore.getState();
+          store.setScreen("datos");
+          store.setMergeOpen(true);
+        }}>Unir</button>
       </div>
       <label className="field-label">Dataset activo
         <select value={active?.dataset_id ?? ""} onChange={(event) => setActiveDataset(event.target.value || null)}>

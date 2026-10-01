@@ -49,7 +49,6 @@ $cleanArgs = if ($Clean) { @('--clean') } else { @() }
     (Join-Path $app 'app_desktop.py')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Copy-Item -LiteralPath (Join-Path $project 'Iniciar.cmd') -Destination $portable
 Copy-Item -LiteralPath (Join-Path $project 'README.md') -Destination $portable
 if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip }
 Add-Type -AssemblyName System.IO.Compression.FileSystem

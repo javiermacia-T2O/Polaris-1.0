@@ -1,11 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../shared/api";
-
-const TYPE_OPTIONS = [
-  ["numero", "Número"], ["texto", "Texto"], ["categorica", "Categoría"],
-  ["fecha", "Fecha"], ["ignorar", "Ignorar"],
-] as const;
+import { TYPE_OPTIONS } from "../../shared/columnTypes";
 
 export function DataPreview({ datasetId, totalRows, totalRowsApproximate = false,
   columnTypes = {}, onColumnTypeChange }: {
@@ -28,7 +24,8 @@ export function DataPreview({ datasetId, totalRows, totalRowsApproximate = false
   const totalLabel = approximate || total === null ? "contando…" : `${total.toLocaleString("es-ES")} filas`;
   const shown = preview.data?.rows.length ?? 0;
   const end = Math.min(total ?? offset + shown, offset + shown);
-  return <article className="panel"><div className="panel-head"><div><h2>Vista previa</h2>
+  return <article className="panel raw-preview"><div className="panel-head"><div>
+    <div className="heading-with-live"><h2>Vista previa</h2><span className="live-badge"><i />Dataset original</span></div>
     <p>{preview.data?.columns.length ?? 0} columnas · {totalLabel}</p></div>
     <div className="pager"><select aria-label="Filas por página" value={limit} onChange={(event) => { setLimit(Number(event.target.value)); setOffset(0); }}>
       {[50, 100, 250, 500, 1000].map((size) => <option key={size} value={size}>{size} / página</option>)}</select>
@@ -42,7 +39,7 @@ export function DataPreview({ datasetId, totalRows, totalRowsApproximate = false
         {column}{sort?.column === column ? (sort.direction === "asc" ? " ↑" : " ↓") : ""}</button>
       {onColumnTypeChange && <select className="column-type-select" aria-label={`Tipo de ${column}`}
         value={columnTypes[column] ?? "texto"} onChange={(event) => onColumnTypeChange(column, event.target.value)}>
-        {TYPE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>}
+        {TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>}
     </th>)}</tr></thead>
       <tbody>{preview.data.rows.map((row, index) => <tr key={offset + index}>{preview.data!.columns.map((column) =>
         <td key={column}>{String(row[column] ?? "")}</td>)}</tr>)}</tbody></table></div>}

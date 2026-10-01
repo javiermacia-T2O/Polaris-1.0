@@ -76,8 +76,9 @@ Ruta raiz del proyecto: C:\Users\javier.macia\Desktop\APP MEDICIÓN
 - docs/ - continuidad del trabajo e informes técnicos; el catálogo de análisis
   está en docs/ANALISIS/README.md.
 - scripts/ - utilidades de construccion, verificacion y sondeo.
-- build_windows.ps1, MedicionAgil.spec, Iniciar.cmd - construccion y
-  arranque del paquete portable para Windows.
+- `scripts/build_portable_release.ps1` - construcción del ZIP Tauri portable.
+- `MedicionAgil_Light/build_windows.ps1` - construcción del paquete Tk legado;
+  ambos se inician directamente desde su ejecutable, sin lanzadores `.cmd`.
 - dist/ y build/ - artefactos de compilacion (no editar a mano).
 
 (Actualizar esta sección si cambia la estructura o la arquitectura.)

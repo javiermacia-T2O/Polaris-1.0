@@ -18,6 +18,7 @@ dist/
 output/
 logs/
 *.log
+release/
 
 # Frontend / Tauri
 node_modules/

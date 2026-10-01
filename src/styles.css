@@ -180,6 +180,9 @@ tbody tr:hover { background: var(--accent-soft); }
 .table-builder-embedded .table-builder-grid { grid-template-columns: 1fr; }
 .table-builder-embedded .variable-list { max-height: 480px; }
 .column-type-select { display: block; max-width: 130px; margin-top: 5px; font-size: 11px; font-weight: 500; }
+.fused-section { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.fused-section + .fused-section { margin-top: 14px; }
+.section-heading { margin: 0; padding: 0 2px; color: #4a5f7a; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .dataset-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .filter-controls { display: grid; gap: 9px; padding: 12px 13px; align-content: start; overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0; }
 .filter-controls .primary { height: 32px; align-self: end; }
@@ -366,4 +369,91 @@ tbody tr:hover { background: var(--accent-soft); }
   .row-2 { grid-template-columns: 1fr; }
   .toolbar-actions { flex-wrap: wrap; }
   .page-header h1 { font-size: 18px; }
+}
+
+/* ---------- Unified data modeller (Fase 4) ---------- */
+.table-builder-embedded { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.data-model-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.16fr) minmax(500px, .84fr); gap: 10px; align-items: stretch; }
+.model-preview-area, .variables-panel { min-width: 0; min-height: 0; }
+.model-preview-area { display: flex; }
+.model-preview-area > .panel { width: 100%; height: 100%; }
+.raw-preview .table-wrap, .model-preview .table-wrap { min-height: 240px; }
+.heading-with-live { display: flex; align-items: center; gap: 10px; }
+.heading-with-live h2 { margin: 0; }
+.live-badge { display: inline-flex; align-items: center; gap: 5px; color: var(--success); font-size: 9.5px; font-weight: 600; white-space: nowrap; }
+.live-badge i { width: 6px; height: 6px; border-radius: 50%; background: #20bf86; box-shadow: 0 0 0 3px #20bf861c; animation: live-pulse 1.6s ease-out infinite; }
+@keyframes live-pulse { 0%, 100% { box-shadow: 0 0 0 2px #20bf861f; } 50% { box-shadow: 0 0 0 5px #20bf8608; } }
+.approx-badge { padding: 3px 7px; border-radius: 999px; background: #f7ead0; color: #8a5f1f; font-size: 9.5px; }
+.modeled-column-name { display: block; padding: 2px 0 4px; }
+.column-type-select { display: block; min-width: 92px; max-width: 132px; height: 25px !important; margin-top: 3px; padding: 2px 5px !important; font-size: 10px !important; font-weight: 500; }
+
+.variables-panel { height: 100%; }
+.variables-head { align-items: flex-start; padding: 10px 12px; }
+.variables-head .panel-actions { flex-wrap: nowrap; }
+.variables-search { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.role-matrix { flex: 1; min-height: 0; display: flex; flex-direction: column; font-size: 10px; }
+.role-matrix-header, .role-matrix-row { display: grid; grid-template-columns: minmax(116px, 1.55fr) minmax(48px, .66fr) minmax(62px, .82fr) minmax(50px, .68fr) 38px minmax(52px, .72fr) 24px; gap: 4px; align-items: center; }
+.role-matrix-header { padding: 6px 8px; border-bottom: 1px solid var(--line); background: #eef3fa; color: #526781; font-size: 9px; font-weight: 700; text-align: center; text-transform: uppercase; letter-spacing: .2px; }
+.role-matrix-header span:first-child { text-align: left; }
+.role-matrix-body { min-height: 0; overflow: auto; }
+.role-matrix-row { min-height: 43px; padding: 5px 8px; border-bottom: 1px solid #edf1f6; transition: background .12s ease; }
+.role-matrix-row:hover { background: #f8fbff; }
+.role-matrix-row.role-row { box-shadow: inset 3px 0 var(--success); }
+.role-matrix-row.role-column { box-shadow: inset 3px 0 var(--purple); }
+.role-matrix-row.role-value { box-shadow: inset 3px 0 var(--accent); }
+.role-matrix-row.role-filter { box-shadow: inset 3px 0 var(--warning); }
+.matrix-variable { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1px 5px; align-items: center; }
+.matrix-variable strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 10.5px; }
+.matrix-variable small { grid-row: 2; color: var(--muted); font-size: 8.5px; }
+.matrix-variable select { grid-column: 2; grid-row: 1 / span 2; width: 78px; height: 25px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 9px; }
+.matrix-role { min-width: 0; padding: 5px 3px; border: 1px solid var(--line); border-radius: 5px; background: #f8fafc; color: #526781; font-size: 9px; white-space: nowrap; }
+.matrix-role:hover { border-color: #aac8e7; background: var(--accent-soft); }
+.matrix-role.active { border-color: transparent; color: #fff; font-weight: 700; }
+.matrix-role.active.role-row { background: var(--success); }
+.matrix-role.active.role-column { background: var(--purple); }
+.matrix-role.active.role-value { background: var(--accent); }
+.matrix-role.active.role-filter { background: var(--warning); }
+.pivot-check { width: 28px; height: 28px; margin: auto; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 5px; background: #f8fafc; }
+.pivot-check.active { border-color: var(--accent); background: var(--accent-soft); }
+.pivot-check input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
+.pivot-check:has(input:disabled) { opacity: .4; }
+.remove-role { width: 22px; height: 26px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--danger); font-size: 15px; line-height: 1; }
+.remove-role:hover:not(:disabled) { background: #fbeceb; }
+.remove-role:disabled { opacity: .2; }
+
+/* Filter and merge dialogs stay centred in the current application window. */
+.filter-modal, .merge-modal { width: min(620px, calc(100vw - 48px)); max-height: min(720px, calc(100vh - 48px)); display: flex; flex-direction: column; border: 1px solid #cdd9e8; border-radius: 12px; background: var(--surface); box-shadow: 0 24px 70px #071a334f; overflow: hidden; }
+.filter-modal > header { display: flex; justify-content: space-between; gap: 16px; padding: 16px 18px 13px; border-bottom: 1px solid var(--line); }
+.filter-modal header h2 { margin: 2px 0 4px; color: var(--ink); font-size: 17px; }
+.filter-modal header p { margin: 0; color: var(--muted); font-size: 11px; }
+.modal-close { width: 30px; height: 30px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 20px; line-height: 1; }
+.modal-close:hover:not(:disabled) { background: #fbeceb; color: var(--danger); }
+.filter-modal-search { display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--surface-soft); }
+.filter-modal-search input { flex: 1; height: 34px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.filter-modal-search span { color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+.filter-modal-values { min-height: 180px; max-height: 390px; overflow: auto; display: grid; align-content: start; gap: 2px; padding: 10px 18px; }
+.filter-modal-values .filter-option { min-height: 31px; padding: 5px 7px; font-size: 11px; }
+.filter-modal-values .filter-option input { width: 15px; height: 15px; accent-color: var(--accent); }
+.filter-modal-values .load-more { margin: 8px auto 2px; }
+.filter-modal > footer { display: flex; justify-content: space-between; gap: 10px; padding: 12px 18px; border-top: 1px solid var(--line); background: var(--surface-soft); }
+.filter-modal > footer > div { display: flex; gap: 7px; }
+.merge-modal { width: min(760px, calc(100vw - 48px)); }
+.merge-modal .merge-grid { overflow: auto; }
+
+/* A compact file section uses the previously empty vertical space. */
+.sidebar-scroll { gap: 6px; padding-top: 8px; }
+.sidebar .section-title { margin-top: 5px; }
+.sidebar .section-title:first-child { margin-top: 0; }
+.sidebar .section-title + button { margin-top: 1px; }
+
+@media (max-width: 1450px) {
+  .data-model-grid { grid-template-columns: minmax(0, 1fr) minmax(440px, .9fr); }
+  .role-matrix-header, .role-matrix-row { grid-template-columns: minmax(104px, 1.35fr) 46px 58px 47px 36px 50px 22px; gap: 3px; }
+  .matrix-role { font-size: 8.5px; }
+}
+@media (max-width: 1120px) {
+  .content { overflow: auto; }
+  .content > section { display: block; }
+  .data-model-grid { grid-template-columns: 1fr; }
+  .model-preview-area > .panel, .variables-panel { min-height: 440px; }
 }

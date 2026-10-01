@@ -17,26 +17,30 @@
       #splash {
         position: fixed; inset: 0;
         display: flex; flex-direction: column; align-items: center; justify-content: center;
-        gap: 24px;
+        gap: 17px; padding: 24px 32px 20px;
         background: radial-gradient(120% 120% at 50% 0%, #16375f 0%, #0b1f3a 62%);
       }
-      .mark { width: 88px; height: 88px; opacity: .96; animation: float 3.4s ease-in-out infinite; }
+      .brand-lockup { display: flex; flex-direction: column; align-items: center; gap: 8px; transform: translateY(5px); }
+      .mark { width: 72px; height: 72px; object-fit: contain; opacity: .96; animation: float 3.4s ease-in-out infinite; }
       .title {
         font-family: "Bodoni MT", "Bodoni 72", Didot, "Times New Roman", serif;
-        font-size: 38px; letter-spacing: 7px; text-transform: uppercase;
+        font-size: 37px; line-height: 1; letter-spacing: 7px; text-transform: uppercase;
         color: #fff; margin: 0;
       }
-      .sub { margin: -12px 0 0; font-size: 10.5px; letter-spacing: 3.4px;
+      .sub { margin: 0; font-size: 10px; letter-spacing: 3.2px;
         text-transform: uppercase; color: #7fa9d8; }
+      .progress-area { width: 100%; display: flex; flex-direction: column; align-items: center; gap: 12px; }
       .bar { width: 232px; height: 3px; border-radius: 999px; background: #1d3f68; overflow: hidden; }
       .bar i { display: block; height: 100%; width: 34%; border-radius: 999px;
         background: linear-gradient(90deg, #5aa2e0, #8fc4f2);
         animation: slide 1.5s ease-in-out infinite; }
-      .msg { min-height: 16px; font-size: 11.5px; color: #9dc0e6; letter-spacing: .3px; }
-      .steps { display: flex; gap: 8px; margin-top: 2px; }
-      .steps span { width: 6px; height: 6px; border-radius: 50%; background: #24486f; transition: background .3s ease; }
-      .steps span.done { background: #5aa2e0; }
-      .steps span.active { background: #8fc4f2; box-shadow: 0 0 8px #8fc4f2; }
+      .msg { min-height: 17px; margin: 0; font-size: 11.5px; color: #9dc0e6; letter-spacing: .3px; text-align: center; }
+      .steps { display: flex; gap: 9px; min-height: 10px; padding: 2px 0; }
+      .steps span { width: 7px; height: 7px; border-radius: 50%; background: #2b5079; transition: background .3s ease, transform .3s ease; animation: dot-wave 1.15s ease-in-out infinite; }
+      .steps span:nth-child(2) { animation-delay: .16s; }
+      .steps span:nth-child(3) { animation-delay: .32s; }
+      .steps span.done { background: #5aa2e0; animation: none; transform: scale(1); }
+      .steps span.active { background: #9ad0ff; box-shadow: 0 0 9px #8fc4f2; }
       #failure { display: none; flex-direction: column; align-items: center; gap: 14px; max-width: 340px; text-align: center; }
       #failure h2 { margin: 0; font-size: 15px; font-weight: 600; color: #ffd9d9; }
       #failure p { margin: 0; font-size: 11.5px; color: #c9a9a9; line-height: 1.5; }
@@ -54,19 +58,24 @@
         padding: 8px 10px; max-width: 320px; word-break: break-word; text-align: left; }
       @keyframes slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(330%); } }
       @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+      @keyframes dot-wave { 0%, 55%, 100% { transform: translateY(0); opacity: .55; } 25% { transform: translateY(-4px); opacity: 1; } }
     </style>
   </head>
   <body>
     <div id="splash">
-      <img class="mark" src="polaris-logo.png" alt="" />
-      <h1 class="title">Polaris</h1>
-      <p class="sub">Marketing Science</p>
-      <div class="bar"><i></i></div>
-      <p class="msg" id="msg">Iniciando Polaris…</p>
-      <div class="steps" id="steps">
-        <span data-step="engine"></span>
-        <span data-step="frontend"></span>
-        <span data-step="ready"></span>
+      <div class="brand-lockup">
+        <img class="mark" src="polaris-logo.png" alt="" />
+        <h1 class="title">Polaris</h1>
+        <p class="sub">Marketing Science</p>
+      </div>
+      <div class="progress-area">
+        <div class="bar"><i></i></div>
+        <p class="msg" id="msg">Iniciando Polaris…</p>
+        <div class="steps" id="steps">
+          <span data-step="engine"></span>
+          <span data-step="frontend"></span>
+          <span data-step="ready"></span>
+        </div>
       </div>
       <div id="failure">
         <h2>No se pudo iniciar el motor local.</h2>
@@ -79,77 +88,6 @@
         <pre id="details"></pre>
       </div>
     </div>
-    <script>
-      // The splash talks to Rust through the global Tauri bridge, so it needs
-      // no bundler and no npm dependency. Every milestone below is a real
-      // event emitted by the StartupCoordinator; nothing advances on a timer.
-      (function () {
-        var tauri = window.__TAURI__;
-        var invoke = tauri && tauri.core && tauri.core.invoke;
-        var listen = tauri && tauri.event && tauri.event.listen;
-        var msg = document.getElementById("msg");
-        var failure = document.getElementById("failure");
-        var failureMsg = document.getElementById("failure-msg");
-        var details = document.getElementById("details");
-        var steps = document.getElementById("steps");
-
-        function markStep(name, state) {
-          var dot = steps.querySelector('[data-step="' + name + '"]');
-          if (dot) dot.className = state;
-        }
-
-        function showFailure(message) {
-          document.querySelector(".bar").style.display = "none";
-          steps.style.display = "none";
-          msg.style.display = "none";
-          failure.style.display = "flex";
-          failureMsg.textContent = message || "Polaris no pudo preparar el servicio de análisis.";
-          details.textContent = message || "";
-        }
-
-        if (!invoke) {
-          // Without the bridge there is nothing to coordinate; keep the
-          // splash honest instead of pretending to progress.
-          showFailure("No se pudo conectar con el proceso principal.");
-          return;
-        }
-
-        // Tell Rust the splash painted, so the coordinator records the first
-        // real milestone.
-        invoke("splash_ready").catch(function () {});
-
-        if (listen) {
-          listen("startup://stage", function (event) {
-            var payload = event.payload || {};
-            if (payload.message) msg.textContent = payload.message;
-            if (payload.stage === "engine_starting") markStep("engine", "active");
-            if (payload.stage === "engine_ready") markStep("engine", "done");
-            if (payload.stage === "frontend_ready") markStep("frontend", "done");
-            if (payload.stage === "ready") markStep("ready", "done");
-          });
-          listen("startup://failed", function (event) {
-            showFailure((event.payload || {}).message);
-          });
-        }
-
-        document.getElementById("retry").addEventListener("click", function () {
-          failure.style.display = "none";
-          document.querySelector(".bar").style.display = "block";
-          steps.style.display = "flex";
-          msg.style.display = "block";
-          msg.textContent = "Reintentando…";
-          markStep("engine", "active");
-          markStep("frontend", "");
-          markStep("ready", "");
-          invoke("retry_startup").catch(function () {});
-        });
-        document.getElementById("details-toggle").addEventListener("click", function () {
-          details.style.display = details.style.display === "block" ? "none" : "block";
-        });
-        document.getElementById("quit").addEventListener("click", function () {
-          invoke("quit_app").catch(function () {});
-        });
-      })();
-    </script>
+    <script src="splash.js"></script>
   </body>
 </html>

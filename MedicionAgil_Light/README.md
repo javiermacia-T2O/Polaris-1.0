@@ -11,8 +11,10 @@ el tiempo de apertura.
 ## Uso en otro equipo Windows
 
 1. Extrae **todo** el ZIP en una carpeta.
-2. Abre `Iniciar.cmd` dentro de la carpeta extraída o
-   `MedicionAgil\MedicionAgil.exe`.
+2. Abre directamente `MedicionAgil\MedicionAgil.exe`.
+
+El ejecutable está compilado como aplicación gráfica y no abre una ventana de
+comandos durante el inicio.
 
 No requiere instalar Python, dependencias, servicios ni modificar el PATH.
 Mantén la carpeta `_internal` junto al ejecutable. Los archivos generados se

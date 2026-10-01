@@ -1,24 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../shared/api";
 import { useUiStore } from "../../app/store";
-import { DataPreview } from "./DataPreview";
 import { MergePanel } from "./MergePanel";
 import { TableScreen } from "../tables/TableScreen";
 import { Loading } from "../../shared/Loading";
-
-function guessType(type: string) {
-  if (/int|float|double|decimal|numeric|number/i.test(type)) return "numero";
-  if (/date|time|timestamp/i.test(type)) return "fecha";
-  if (/bool|category|object|string/i.test(type)) return "categorica";
-  return "texto";
-}
+import { guessType } from "../../shared/columnTypes";
 
 export function DatasetsScreen() {
   const client = useQueryClient();
-  const { activeDatasetId, setActiveDataset, setStatus, columnTypes,
-    setColumnTypes, setColumnType } = useUiStore();
-  const [previewKey, setPreviewKey] = useState(0);
+  const { activeDatasetId, setActiveDataset, setStatus, setColumnTypes } = useUiStore();
   const typedDatasetId = useRef<string | null>(null);
   const datasets = useQuery({
     queryKey: ["datasets"], queryFn: api.listDatasets,
@@ -69,6 +60,20 @@ export function DatasetsScreen() {
     onSuccess: (path) => setStatus(path ? { message: "Dataset exportado", kind: "success" } : null),
     onError: (error: Error) => setStatus({ message: error.message, kind: "error" }),
   });
+  const refresh = useMutation({
+    mutationFn: async () => {
+      if (!active) return;
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["datasets"] }),
+        client.invalidateQueries({ queryKey: ["columns", active.dataset_id] }),
+        client.invalidateQueries({ queryKey: ["preview", active.dataset_id] }),
+        client.invalidateQueries({ queryKey: ["table-preview", active.dataset_id] }),
+      ]);
+    },
+    onMutate: () => setStatus({ message: "Actualizando la vista…", kind: "info", sticky: true }),
+    onSuccess: () => setStatus({ message: "Vista actualizada", kind: "success" }),
+    onError: (error: Error) => setStatus({ message: `No se pudo actualizar: ${error.message}`, kind: "error" }),
+  });
 
   if (datasets.isLoading) return <section><Loading label="Cargando datasets…" /></section>;
   if (!datasets.data?.length) return <section><header className="page-header"><div>
@@ -78,8 +83,9 @@ export function DatasetsScreen() {
         onClick={() => load.mutate()} disabled={load.isPending}>Abrir archivo</button></div></section>;
 
   return <section><header className="page-header"><div><p className="eyebrow">DATOS</p>
-    <h1>Datos y constructor de tablas</h1><p>Explora, tipa, filtra, pivota y construye sin salir de esta vista.</p></div>
-    <div className="toolbar-actions"><button className="quiet-button" onClick={() => setPreviewKey((key) => key + 1)}>Refrescar</button>
+    <h1>Datos y modelado</h1><p>Explora el dataset y construye la tabla en una única vista.</p></div>
+    <div className="toolbar-actions"><button className="quiet-button" onClick={() => refresh.mutate()} disabled={refresh.isPending}>
+      {refresh.isPending ? "Actualizando…" : "Refrescar vista"}</button>
       <button className="quiet-button" onClick={() => exportDataset.mutate()} disabled={!active || exportDataset.isPending}>Exportar</button>
       <button className="primary" onClick={() => load.mutate()} disabled={load.isPending}>{load.isPending ? "Importando…" : "Abrir archivo"}</button></div>
   </header>
@@ -88,11 +94,6 @@ export function DatasetsScreen() {
     <select value={active?.dataset_id ?? ""} onChange={(event) => setActiveDataset(event.target.value)}>
       {datasets.data.map((item) => <option key={item.dataset_id} value={item.dataset_id}>{item.name} · {item.rows === null ? "contando…" : `${item.rows.toLocaleString("es-ES")} filas`}</option>)}</select>
     <span className="active-badge">● {active?.name}</span></div></div>
-  {active && <div className="unified-data-workspace">
-    <DataPreview key={`${active.dataset_id}-${previewKey}`} datasetId={active.dataset_id}
-      totalRows={active.rows} totalRowsApproximate={active.rows_approximate}
-      columnTypes={columnTypes} onColumnTypeChange={setColumnType} />
-    <article className="panel builder-panel"><TableScreen embedded /></article>
-  </div>}
+  {active && <TableScreen embedded />}
   <MergePanel datasets={datasets.data} /></section>;
 }

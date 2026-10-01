@@ -1,19 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, cancelRequest } from "../../shared/api";
 import { useUiStore } from "../../app/store";
-import type { TableRecipe } from "../../shared/types";
+import type { TablePage, TableRecipe } from "../../shared/types";
 import { DataPreview } from "../datasets/DataPreview";
 import { Loading } from "../../shared/Loading";
+import { TYPE_LABELS, TYPE_OPTIONS } from "../../shared/columnTypes";
 
 const AGGREGATIONS = ["sum", "mean", "median", "min", "max", "count", "nunique"];
 const AGG_LABELS: Record<string, string> = {
   sum: "Suma", mean: "Media", median: "Mediana", min: "Mínimo",
   max: "Máximo", count: "Recuento", nunique: "Únicos",
-};
-const TYPE_LABELS: Record<string, string> = {
-  numero: "Número", texto: "Texto", categorica: "Categoría",
-  fecha: "Fecha", ignorar: "Ignorada",
 };
 
 type Role = "row" | "column" | "value" | "filter";
@@ -21,7 +19,7 @@ type ValueSpec = { col: string; agg: string; pivot: boolean };
 
 export function TableScreen({ embedded = false }: { embedded?: boolean }) {
   const client = useQueryClient();
-  const { activeDatasetId, setActiveDataset, setStatus, columnTypes } = useUiStore();
+  const { activeDatasetId, setActiveDataset, setStatus, columnTypes, setColumnType } = useUiStore();
   const datasets = useQuery({ queryKey: ["datasets"], queryFn: api.listDatasets });
   const source = datasets.data?.find((item) => item.dataset_id === activeDatasetId) ?? datasets.data?.[0];
 
@@ -30,20 +28,21 @@ export function TableScreen({ embedded = false }: { embedded?: boolean }) {
   const [values, setValues] = useState<ValueSpec[]>([]);
   const [filters, setFilters] = useState<Record<string, unknown[]>>({});
   const [search, setSearch] = useState("");
-  const [tableId, setTableId] = useState<string | null>(null);
+  const [filterColumn, setFilterColumn] = useState<string | null>(null);
   const [delayedRecipe, setDelayedRecipe] = useState<TableRecipe>({});
   const buildRequestId = useRef<string | null>(null);
+  const originalDatasetId = useRef<string | null>(null);
+  const appliedDatasetId = useRef<string | null>(null);
 
   const columnsQuery = useQuery({
     queryKey: ["columns", source?.dataset_id],
     queryFn: () => api.columns(source!.dataset_id),
     enabled: Boolean(source?.dataset_id),
   });
-
   const allColumns = useMemo(() => columnsQuery.data ?? [], [columnsQuery.data]);
-  const numericColumns = useMemo(() => allColumns.filter((column) =>
-    /int|float|double|decimal|numeric|number/i.test(column.type)).map((column) => column.name),
-    [allColumns]);
+  const visibleColumns = useMemo(() => allColumns.filter((column) =>
+    column.name.toLocaleLowerCase("es").includes(search.toLocaleLowerCase("es"))),
+  [allColumns, search]);
 
   const recipe: TableRecipe = useMemo(() => ({
     rows,
@@ -53,6 +52,10 @@ export function TableScreen({ embedded = false }: { embedded?: boolean }) {
     pivot: values.some((value) => value.pivot),
     column_types: columnTypes,
   }), [rows, columns, values, filters, columnTypes]);
+  const configured = rows.length > 0 || columns.length > 0 || values.length > 0
+    || Object.values(filters).some((selected) => selected.length > 0);
+  const delayedConfigured = Boolean(delayedRecipe.rows?.length || delayedRecipe.columns?.length
+    || delayedRecipe.values?.length || Object.values(delayedRecipe.filters ?? {}).some((selected) => selected.length > 0));
 
   const roleOf = (column: string): Role | null =>
     rows.includes(column) ? "row" : columns.includes(column) ? "column"
@@ -66,220 +69,287 @@ export function TableScreen({ embedded = false }: { embedded?: boolean }) {
     setFilters((current) => { const next = { ...current }; delete next[column]; return next; });
     if (role === "row") setRows((current) => [...current, column]);
     if (role === "column") setColumns((current) => [...current, column]);
-    if (role === "value") setValues((current) => [...current, { col: column, agg: "sum", pivot: columns.length > 0 }]);
-    if (role === "filter") setFilters((current) => ({ ...current, [column]: [] }));
+    if (role === "value") {
+      const sourceType = allColumns.find((item) => item.name === column)?.type ?? "";
+      const numeric = columnTypes[column] === "numero"
+        || /int|float|double|decimal|numeric|number/i.test(sourceType);
+      setValues((current) => [...current, { col: column, agg: numeric ? "sum" : "count", pivot: false }]);
+    }
+    if (role === "filter") setFilters((current) => ({ ...current, [column]: current[column] ?? [] }));
   };
 
-  const clearAll = () => {
-    setRows([]); setColumns([]); setValues([]); setFilters({}); setTableId(null);
+  const clearRecipe = () => {
+    setRows([]);
+    setColumns([]);
+    setValues([]);
+    setFilters({});
+    setFilterColumn(null);
   };
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setDelayedRecipe(recipe), 200);
+    const timer = window.setTimeout(() => setDelayedRecipe(recipe), 180);
     return () => window.clearTimeout(timer);
   }, [recipe]);
+
+  useEffect(() => {
+    if (!source) return;
+    if (!originalDatasetId.current || source.dataset_id !== appliedDatasetId.current) {
+      originalDatasetId.current = source.dataset_id;
+      appliedDatasetId.current = null;
+    }
+    clearRecipe();
+  // A source switch deliberately starts a clean recipe; role state should not
+  // leak between unrelated datasets.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source?.dataset_id]);
 
   const preview = useQuery({
     queryKey: ["table-preview", source?.dataset_id, JSON.stringify(delayedRecipe)],
     queryFn: ({ signal }) => api.previewTable(source!.dataset_id, delayedRecipe, 20, { signal }),
-    enabled: Boolean(source?.dataset_id) && (rows.length > 0 || columns.length > 0
-      || values.length > 0 || Object.keys(delayedRecipe.filters ?? {}).length > 0),
+    enabled: Boolean(source?.dataset_id) && delayedConfigured,
     retry: false,
+    placeholderData: (previous) => previous,
   });
 
   const build = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!source) throw new Error("Selecciona un dataset.");
+      if (!configured) throw new Error("Asigna al menos un rol o filtro.");
       const requestId = `build-${Date.now().toString(36)}`;
       buildRequestId.current = requestId;
       return api.buildTable(source.dataset_id, recipe, {
-        requestId, timeoutMs: 30 * 60 * 1000,
+        requestId,
+        timeoutMs: 30 * 60 * 1000,
         onProgress: ({ message }) => setStatus({ message, kind: "info", sticky: true }),
       });
     },
-    onMutate: () => setStatus({ message: "Construyendo tabla…", kind: "info", sticky: true }),
+    onMutate: () => setStatus({ message: "Aplicando cambios…", kind: "info", sticky: true }),
     onSuccess: async (id) => {
-      setTableId(id);
+      appliedDatasetId.current = id;
       setActiveDataset(id);
       await client.invalidateQueries({ queryKey: ["datasets"] });
-      await client.fetchQuery({ queryKey: ["preview", id, 0, 100, null],
-        queryFn: () => api.tablePage(id, 0, 100) });
-      setStatus({ message: "Tabla construida y vista previa actualizada", kind: "success" });
+      await client.invalidateQueries({ queryKey: ["columns", id] });
+      await client.fetchQuery({
+        queryKey: ["preview", id, 0, 100, null],
+        queryFn: () => api.tablePage(id, 0, 100),
+      });
+      setStatus({ message: "Cambios aplicados; tabla y vista previa actualizadas", kind: "success" });
     },
-    onError: (error: Error) => setStatus({ message: `No se pudo construir: ${error.message}`, kind: "error" }),
+    onError: (error: Error) => setStatus({ message: `No se pudieron aplicar los cambios: ${error.message}`, kind: "error" }),
+    onSettled: () => { buildRequestId.current = null; },
   });
 
-  useEffect(() => {
-    setRows([]); setColumns([]); setValues([]); setFilters({}); setTableId(null);
-  }, [source?.dataset_id]);
+  const resetWorkspace = async () => {
+    clearRecipe();
+    const original = originalDatasetId.current;
+    if (!source || !original || original === source.dataset_id) {
+      await client.invalidateQueries({ queryKey: ["preview", source?.dataset_id] });
+      setStatus({ message: "Modelado restablecido", kind: "success" });
+      return;
+    }
+    setStatus({ message: "Restaurando el dataset original…", kind: "info", sticky: true });
+    setActiveDataset(original);
+    await client.invalidateQueries({ queryKey: ["datasets"] });
+    await client.fetchQuery({
+      queryKey: ["preview", original, 0, 100, null],
+      queryFn: () => api.tablePage(original, 0, 100),
+    });
+    appliedDatasetId.current = null;
+    originalDatasetId.current = original;
+    setStatus({ message: "Dataset original restaurado", kind: "success" });
+  };
 
-  const result = datasets.data?.find((item) => item.dataset_id === tableId);
-  const visible = allColumns.filter((column) =>
-    column.name.toLocaleLowerCase("es").includes(search.toLocaleLowerCase("es")));
-
-  if (!source && !datasets.isLoading) return <section>
-    <header className="page-header"><div><p className="eyebrow">PREPARACIÓN</p><h1>Constructor de tablas</h1></div></header>
-    <div className="empty"><h2>Selecciona o carga un dataset</h2><p>La tabla se construye en el motor local.</p></div>
-  </section>;
+  if (!source && !datasets.isLoading) return <div className="empty">
+    <h2>Selecciona o carga un dataset</h2><p>La tabla se construye en el motor local.</p>
+  </div>;
 
   return <section className={embedded ? "table-builder-embedded" : undefined}>
-    {!embedded && <header className="page-header">
-      <div><p className="eyebrow">PREPARACIÓN · {source?.name ?? ""}</p><h1>Constructor de tablas</h1>
-        <p>Asigna roles a las variables y observa la tabla construirse paso a paso.</p></div>
-      <div className="toolbar-actions">
-        <span className="active-dataset-chip" title="Dataset activo">
-          <span className="connection-dot connected" />
-          {source ? source.name : "Sin dataset"}
-        </span>
-        <button className="quiet-button" onClick={() => preview.refetch()} disabled={preview.isFetching}>Refrescar vista</button>
-        <button className="quiet-button" onClick={clearAll}>Reset</button>
-        <button className="primary" onClick={() => build.mutate()} disabled={build.isPending || !source || !values.length}>
-          {build.isPending ? "Construyendo…" : "Construir tabla"}</button>
-        {build.isPending && <button className="quiet-button" onClick={() => {
-          if (buildRequestId.current) void cancelRequest(buildRequestId.current);
-        }}>Cancelar</button>}
-      </div>
-    </header>}
-    {embedded && <div className="panel-head"><div><h2>Constructor de tablas</h2>
-      <p>Asigna roles; el preview se recalcula de forma cancelable.</p></div>
-      <div className="toolbar-actions"><button className="quiet-button" onClick={clearAll}>Reset</button>
-      <button className="primary" onClick={() => build.mutate()} disabled={build.isPending || !source || !values.length}>
-        {build.isPending ? "Aplicando cambios…" : "Aplicar cambios"}</button>
-      {build.isPending && <button className="quiet-button" onClick={() => buildRequestId.current && cancelRequest(buildRequestId.current)}>Cancelar</button>}</div></div>}
     {datasets.error && <div className="error" role="alert">No se pudieron cargar los datasets: {datasets.error.message}</div>}
     {build.error && <div className="error" role="alert">No se pudo construir la tabla: {build.error.message}</div>}
 
-    <div className="table-builder-grid">
-      <article className="panel">
-        <div className="panel-head"><div><h2>Variables</h2><p>{allColumns.length} columnas · {rows.length} fila(s) · {columns.length} columna(s) · {values.length} valor(es)</p></div></div>
-        <div className="config-fields">
-          <input className="checkbox-search" placeholder="Buscar variable…" value={search} onChange={(event) => setSearch(event.target.value)} />
+    <div className="data-model-grid">
+      <div className="model-preview-area">
+        {!configured && source && <DataPreview datasetId={source.dataset_id}
+          totalRows={source.rows} totalRowsApproximate={source.rows_approximate}
+          columnTypes={columnTypes} onColumnTypeChange={setColumnType} />}
+        {configured && <RecipePreview preview={preview.data} error={preview.error}
+          fetching={preview.isFetching} columnTypes={columnTypes}
+          onColumnTypeChange={setColumnType} onRefresh={() => preview.refetch()} />}
+      </div>
+
+      <article className="panel variables-panel">
+        <div className="panel-head variables-head">
+          <div><div className="heading-with-live"><h2>Variables</h2><span className="live-badge"><i />En tiempo real</span></div>
+            <p>{allColumns.length} variables · {rows.length} fila(s) · {columns.length} columna(s) · {values.length} valor(es)</p></div>
+          <div className="panel-actions">
+            <button className="quiet-button" onClick={() => void resetWorkspace()} disabled={build.isPending}>Reset</button>
+            <button className="primary" onClick={() => build.mutate()} disabled={build.isPending || !configured}>
+              {build.isPending ? "Aplicando…" : "Aplicar cambios"}</button>
+            {build.isPending && <button className="quiet-button" onClick={() => {
+              if (buildRequestId.current) void cancelRequest(buildRequestId.current);
+            }}>Cancelar</button>}
+          </div>
         </div>
-        <div className="variable-list">
-          {columnsQuery.isLoading && <Loading label="Leyendo columnas…" inline />}
-          {!columnsQuery.isLoading && visible.length === 0 && <div className="empty-inline">Sin variables que coincidan.</div>}
-          {visible.map((column) => {
-            const role = roleOf(column.name);
-            const value = values.find((item) => item.col === column.name);
-            return <div key={column.name} className={`variable-card ${role ? `role-${role}` : ""}`}>
-              <div className="variable-head">
-                <div className="variable-name">
-                  <span aria-hidden="true">{role === "row" ? "▤" : role === "column" ? "▥" : role === "value" ? "Σ" : role === "filter" ? "⛃" : "•"}</span>
-                  <span title={column.name}>{column.name}</span>
+        <div className="variables-search">
+          <input className="checkbox-search" placeholder="Buscar variable…" value={search}
+            onChange={(event) => setSearch(event.target.value)} />
+        </div>
+        <div className="role-matrix" role="table" aria-label="Asignación de variables">
+          <div className="role-matrix-header" role="row">
+            <span>Variable</span><span>Fila</span><span>Columna</span><span>Valor</span><span>Piv.</span><span>Filtro</span><span />
+          </div>
+          <div className="role-matrix-body">
+            {columnsQuery.isLoading && <Loading label="Leyendo variables…" inline />}
+            {!columnsQuery.isLoading && visibleColumns.length === 0 && <div className="empty-inline">Sin variables que coincidan.</div>}
+            {visibleColumns.map((column) => {
+              const role = roleOf(column.name);
+              const value = values.find((item) => item.col === column.name);
+              return <div key={column.name} className={`role-matrix-row ${role ? `role-${role}` : ""}`} role="row">
+                <div className="matrix-variable" title={column.name}>
+                  <strong>{column.name}</strong>
+                  <small>{TYPE_LABELS[columnTypes[column.name] ?? ""] ?? column.type}</small>
+                  {value && <select aria-label={`Agregación de ${column.name}`} value={value.agg}
+                    onChange={(event) => setValues((current) => current.map((item) =>
+                      item.col === column.name ? { ...item, agg: event.target.value } : item))}>
+                    {AGGREGATIONS.map((agg) => <option key={agg} value={agg}>{AGG_LABELS[agg]}</option>)}
+                  </select>}
                 </div>
-                <div className="variable-type">{TYPE_LABELS[columnTypes[column.name] ?? ""] ?? column.type}</div>
-              </div>
-              <div className="role-buttons">
-                {(["row", "column", "value", "filter"] as Role[]).map((item) => <button key={item}
-                  className={`role-${item} ${role === item ? "active" : ""}`}
-                  onClick={() => setRole(column.name, role === item ? null : item)}>
-                  {item === "row" ? "Fila" : item === "column" ? "Columna" : item === "value" ? "Valor" : "Filtro"}</button>)}
-                {role && <button className="trash-button" title="Quitar rol" aria-label="Quitar rol" onClick={() => setRole(column.name, null)}>×</button>}
-              </div>
-              {value && <div className="variable-extras">
-                <select value={value.agg} onChange={(event) => setValues((current) =>
-                  current.map((item) => item.col === column.name ? { ...item, agg: event.target.value } : item))}>
-                  {AGGREGATIONS.map((agg) => <option key={agg} value={agg}>{AGG_LABELS[agg]}</option>)}</select>
-                <label><input type="checkbox" checked={value.pivot} onChange={(event) => setValues((current) =>
-                  current.map((item) => item.col === column.name ? { ...item, pivot: event.target.checked } : item))} />Pivotar</label>
-              </div>}
-              {role === "filter" && <FilterValues
-                datasetId={source!.dataset_id}
-                column={column.name}
-                selected={filters[column.name] ?? []}
-                onChange={(next) => setFilters((current) => ({ ...current, [column.name]: next }))} />}
-              {role === "value" && !numericColumns.includes(column.name) &&
-                <div className="variable-type">Sugerencia: usa «Recuento» para variables no numéricas.</div>}
-            </div>;
-          })}
+                <RoleButton label="Fila" active={role === "row"} tone="row"
+                  onClick={() => setRole(column.name, role === "row" ? null : "row")} />
+                <RoleButton label="Columna" active={role === "column"} tone="column"
+                  onClick={() => setRole(column.name, role === "column" ? null : "column")} />
+                <RoleButton label="Valor" active={role === "value"} tone="value"
+                  onClick={() => setRole(column.name, role === "value" ? null : "value")} />
+                <label className={`pivot-check ${value?.pivot ? "active" : ""}`} title="Pivotar este valor por las columnas seleccionadas">
+                  <input type="checkbox" aria-label={`Pivotar ${column.name}`} disabled={!value}
+                    checked={value?.pivot ?? false} onChange={(event) => setValues((current) => current.map((item) =>
+                      item.col === column.name ? { ...item, pivot: event.target.checked } : item))} />
+                </label>
+                <RoleButton label="Filtro" active={role === "filter"} tone="filter" onClick={() => {
+                  if (role !== "filter") setRole(column.name, "filter");
+                  setFilterColumn(column.name);
+                }} />
+                <button className="remove-role" aria-label={`Quitar rol de ${column.name}`}
+                  title="Quitar rol" disabled={!role} onClick={() => setRole(column.name, null)}>×</button>
+              </div>;
+            })}
+          </div>
         </div>
       </article>
-
-      <div className="table-recipe-summary">
-        <article className="panel">
-          <div className="panel-head">
-            <div><h2>Vista previa</h2>
-              <p>{preview.data ? `${preview.data.columns.length} columnas · ${preview.data.rows.length} filas` : "Se actualiza al asignar roles."}</p></div>
-            <div className="preview-meta">
-              {preview.isFetching && <Loading label="Actualizando…" inline />}
-              {preview.data?.approximate && <span>Muestra aproximada</span>}
-            </div>
-          </div>
-          {values.length === 0 && rows.length === 0 && columns.length === 0 &&
-            <div className="preview-hint">Asigna una variable como <strong>Fila</strong>, <strong>Columna</strong> o <strong>Valor</strong> para ver la tabla.</div>}
-          {values.length === 0 && (rows.length > 0 || columns.length > 0) &&
-            <div className="preview-hint">Sin métrica seleccionada: se muestran las dimensiones sin agregación.</div>}
-          {values.length > 0 && rows.length === 0 && columns.length === 0 &&
-            <div className="preview-hint">Sin variable de fila o columna no se puede representar la tabla.</div>}
-          {preview.error && <div className="error" role="alert">{preview.error.message}</div>}
-          {preview.data && preview.data.columns.length > 0 && <div className="table-wrap">
-            <table><thead><tr>{preview.data.columns.map((column) => <th key={column}>{column}</th>)}</tr></thead>
-              <tbody>{preview.data.rows.map((row, index) => <tr key={index}>
-                {preview.data!.columns.map((column) => <td key={column}>{formatCell(row[column])}</td>)}</tr>)}</tbody></table>
-          </div>}
-        </article>
-        {!embedded && result && <DataPreview key={`${result.dataset_id}-${result.rows}`} datasetId={result.dataset_id} totalRows={result.rows} />}
-      </div>
     </div>
+
+    {filterColumn && source && <FilterModal datasetId={source.dataset_id} column={filterColumn}
+      selected={filters[filterColumn] ?? []} onClose={() => setFilterColumn(null)}
+      onApply={(selected) => {
+        setFilters((current) => ({ ...current, [filterColumn]: selected }));
+        setFilterColumn(null);
+      }} />}
   </section>;
+}
+
+function RoleButton({ label, active, tone, onClick }: {
+  label: string; active: boolean; tone: Role; onClick: () => void;
+}) {
+  return <button className={`matrix-role role-${tone} ${active ? "active" : ""}`}
+    aria-pressed={active} onClick={onClick}>{label}</button>;
+}
+
+function RecipePreview({ preview, error, fetching, columnTypes, onColumnTypeChange, onRefresh }: {
+  preview: TablePage | undefined; error: Error | null; fetching: boolean;
+  columnTypes: Record<string, string>;
+  onColumnTypeChange: (column: string, type: string) => void;
+  onRefresh: () => unknown;
+}) {
+  return <article className="panel model-preview">
+    <div className="panel-head"><div><div className="heading-with-live"><h2>Vista previa</h2>
+      <span className="live-badge"><i />Actualización en tiempo real</span></div>
+      <p>{preview ? `${preview.columns.length} columnas · ${preview.rows.length} filas de muestra` : "Construyendo la vista…"}</p></div>
+      <div className="panel-actions">
+        {fetching && <Loading label="Actualizando…" inline />}
+        {preview?.approximate && <span className="approx-badge">Muestra acotada</span>}
+        <button className="quiet-button" onClick={onRefresh} disabled={fetching}>Refrescar</button>
+      </div></div>
+    {error && <div className="error" role="alert">{error.message}</div>}
+    {!preview && !error && <Loading label="Preparando la tabla…" />}
+    {preview && preview.columns.length > 0 && <div className="table-wrap">
+      <table><thead><tr>{preview.columns.map((column) => <th key={column}>
+        <span className="modeled-column-name">{column}</span>
+        {Object.prototype.hasOwnProperty.call(columnTypes, column) && <select className="column-type-select"
+          aria-label={`Tipo de ${column}`} value={columnTypes[column]}
+          onChange={(event) => onColumnTypeChange(column, event.target.value)}>
+          {TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </select>}
+      </th>)}</tr></thead>
+      <tbody>{preview.rows.map((row, index) => <tr key={index}>
+        {preview.columns.map((column) => <td key={column}>{formatCell(row[column])}</td>)}</tr>)}</tbody></table>
+    </div>}
+  </article>;
 }
 
 function formatCell(value: unknown) {
   if (value === null || value === undefined) return "—";
-  if (typeof value === "number") return Number.isInteger(value) ? value.toLocaleString("es-ES") : value.toFixed(3);
+  if (typeof value === "number") return Number.isInteger(value) ? value.toLocaleString("es-ES") : value.toLocaleString("es-ES", { maximumFractionDigits: 3 });
   return String(value);
 }
 
-function FilterValues({ datasetId, column, selected, onChange }: {
+function valueKey(value: unknown) {
+  return `${typeof value}:${JSON.stringify(value)}`;
+}
+
+function FilterModal({ datasetId, column, selected, onApply, onClose }: {
   datasetId: string; column: string; selected: unknown[];
-  onChange: (values: unknown[]) => void;
+  onApply: (values: unknown[]) => void; onClose: () => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<unknown[]>(selected);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search), 250);
     return () => window.clearTimeout(timer);
   }, [search]);
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose]);
+
   const values = useInfiniteQuery({
     queryKey: ["column-values", datasetId, column, debouncedSearch],
-    queryFn: ({ pageParam, signal }) => api.columnValues(
-      datasetId, column, debouncedSearch, 100, pageParam, { signal }),
+    queryFn: ({ pageParam, signal }) => api.columnValues(datasetId, column,
+      debouncedSearch, 100, pageParam, { signal }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.next_cursor ?? undefined,
-    enabled: open,
     staleTime: 5 * 60 * 1000,
   });
   const options = values.data?.pages.flatMap((page) => page.values) ?? [];
-  const key = (value: unknown) => `${typeof value}:${JSON.stringify(value)}`;
-  const toggle = (value: unknown) => onChange(
-    selected.some((item) => key(item) === key(value))
-      ? selected.filter((item) => key(item) !== key(value)) : [...selected, value]);
+  const toggle = (value: unknown) => setDraft((current) => current.some((item) => valueKey(item) === valueKey(value))
+    ? current.filter((item) => valueKey(item) !== valueKey(value)) : [...current, value]);
 
-  return <div className="variable-extras filter-values">
-    <button type="button" className="filter-toggle" onClick={() => setOpen((current) => !current)}>
-      {selected.length ? `${selected.length} valor(es) seleccionado(s)` : "Seleccionar valores…"}
-      <span aria-hidden="true">{open ? "▴" : "▾"}</span>
-    </button>
-    {selected.length > 0 && <div className="filter-chips">
-      {selected.map((value) => <button key={key(value)} type="button" className="filter-chip"
-        onClick={() => toggle(value)} title="Quitar">{formatCell(value)} ×</button>)}
-      <button type="button" className="quiet-button" onClick={() => onChange([])}>Limpiar</button>
-    </div>}
-    {open && <div className="filter-dropdown">
-      {values.isLoading && <Loading label="Leyendo valores…" inline />}
-      {!values.isLoading && <>
-        <input className="checkbox-search" placeholder="Buscar valor…" value={search}
-          onChange={(event) => setSearch(event.target.value)} />
-        <div className="filter-options">
-          {options.length === 0 && <div className="empty-inline">Sin coincidencias.</div>}
-          {options.map((value) => <label key={key(value)} className="filter-option">
-            <input type="checkbox" checked={selected.some((item) => key(item) === key(value))} onChange={() => toggle(value)} />
-            <span title={String(value)}>{formatCell(value)}</span></label>)}
-        </div>
-        {values.hasNextPage && <button className="quiet-button" disabled={values.isFetchingNextPage}
-          onClick={() => values.fetchNextPage()}>{values.isFetchingNextPage ? "Cargando…" : "Cargar más"}</button>}
-      </>}
-    </div>}
-  </div>;
+  return createPortal(<div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+    if (event.currentTarget === event.target) onClose();
+  }}>
+    <section className="filter-modal" role="dialog" aria-modal="true" aria-labelledby="filter-modal-title">
+      <header><div><p className="eyebrow">FILTRO</p><h2 id="filter-modal-title">{column}</h2>
+        <p>Selecciona los valores que formarán parte de la vista previa y de la tabla final.</p></div>
+        <button className="modal-close" aria-label="Cerrar filtro" onClick={onClose}>×</button></header>
+      <div className="filter-modal-search">
+        <input autoFocus placeholder="Buscar valores…" value={search} onChange={(event) => setSearch(event.target.value)} />
+        <span>{draft.length} seleccionado(s)</span>
+      </div>
+      <div className="filter-modal-values">
+        {values.isLoading && <Loading label="Leyendo valores…" />}
+        {values.error && <div className="error" role="alert">{values.error.message}</div>}
+        {!values.isLoading && !values.error && options.length === 0 && <div className="empty-inline">Sin coincidencias.</div>}
+        {options.map((value) => <label key={valueKey(value)} className="filter-option">
+          <input type="checkbox" checked={draft.some((item) => valueKey(item) === valueKey(value))}
+            onChange={() => toggle(value)} /><span title={formatCell(value)}>{formatCell(value)}</span>
+        </label>)}
+        {values.hasNextPage && <button className="quiet-button load-more" disabled={values.isFetchingNextPage}
+          onClick={() => values.fetchNextPage()}>{values.isFetchingNextPage ? "Cargando…" : "Cargar más valores"}</button>}
+      </div>
+      <footer><button className="quiet-button" onClick={() => setDraft([])}>Limpiar selección</button>
+        <div><button className="quiet-button" onClick={onClose}>Cancelar</button>
+          <button className="primary" onClick={() => onApply(draft)}>Aplicar filtro</button></div></footer>
+    </section>
+  </div>, document.body);
 }

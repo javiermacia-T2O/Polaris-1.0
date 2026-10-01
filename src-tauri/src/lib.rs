@@ -576,6 +576,18 @@ fn prewarm_engine(manager: Arc<SidecarManager>, coordinator: Arc<StartupCoordina
     match result {
         Ok(response) if response.get("ok").and_then(Value::as_bool).unwrap_or(false) => {
             coordinator.mark_engine_ready(&app);
+            // The engine answered `health` without loading the scientific
+            // stack (pandas/DuckDB). Ask it to warm up in the background so
+            // the first real data operation does not pay the import cost
+            // while the user waits. Fire-and-forget: a failure here is
+            // harmless, the real operation will report it.
+            let _ = manager.request(
+                None,
+                "warmup",
+                json!({}),
+                "background",
+                CONTROL_TIMEOUT,
+            );
         }
         Ok(response) => {
             let message = response
@@ -765,9 +777,13 @@ impl WindowsCreationFlags for Command {
 }
 
 fn sidecar_command(resource_dir: &Path, token: &str) -> Result<Command, SidecarProcessError> {
+    // CREATE_NO_WINDOW prevents the frozen Python worker from ever creating a
+    // console window or taskbar entry. The trait is a no-op on non-Windows
+    // platforms, keeping development and tests portable.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     if let Ok(explicit) = std::env::var("MEDICION_SIDECAR") {
         let mut command = Command::new(explicit);
-        command.arg("--token").arg(token);
+        command.arg("--token").arg(token).creation_flags(CREATE_NO_WINDOW);
         return Ok(command);
     }
     let executable = std::env::current_exe().map_err(|_| SidecarProcessError::Missing)?;
@@ -777,13 +793,13 @@ fn sidecar_command(resource_dir: &Path, token: &str) -> Result<Command, SidecarP
         .join("medicion-sidecar.exe");
     if sibling.is_file() {
         let mut command = Command::new(sibling);
-        command.arg("--token").arg(token);
+        command.arg("--token").arg(token).creation_flags(CREATE_NO_WINDOW);
         return Ok(command);
     }
     let bundled = resource_dir.join("sidecar").join("medicion-sidecar.exe");
     if bundled.is_file() {
         let mut command = Command::new(bundled);
-        command.arg("--token").arg(token);
+        command.arg("--token").arg(token).creation_flags(CREATE_NO_WINDOW);
         return Ok(command);
     }
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -800,7 +816,8 @@ fn sidecar_command(resource_dir: &Path, token: &str) -> Result<Command, SidecarP
             .env(
                 "PYTHONPATH",
                 format!("{};{}", python_path.display(), legacy_path.display()),
-            );
+            )
+            .creation_flags(CREATE_NO_WINDOW);
         return Ok(command);
     }
     Err(SidecarProcessError::Missing)
