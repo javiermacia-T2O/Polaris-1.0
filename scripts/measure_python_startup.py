@@ -23,8 +23,9 @@ import time
 from pathlib import Path
 
 WORKSPACE = Path(__file__).resolve().parent.parent
-PYTHON_DIR = WORKSPACE / "MedicionAgil_Light" / "python"
-APP_DIR = WORKSPACE / "MedicionAgil_Light" / "mmm_app"
+SIDECAR_SOURCE = WORKSPACE / "src-tauri" / "sidecar-source"
+PYTHON_DIR = SIDECAR_SOURCE / "python"
+APP_DIR = SIDECAR_SOURCE / "mmm_app"
 
 
 def _child() -> int:

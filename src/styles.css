@@ -43,8 +43,6 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .section-title { margin: 0; color: #ffffff; font-size: 9.5px; font-weight: 700; letter-spacing: 1.1px; text-transform: uppercase; opacity: .82; }
 .section-title:first-child { margin-top: 0; }
 .sidebar .block { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--sidebar-line); border-radius: 8px; background: var(--sidebar-soft); }
-.file-label { display: flex; align-items: center; gap: 7px; color: #cfe0f4; font-size: 11px; overflow: hidden; }
-.file-label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .field-label { display: grid; gap: 3px; color: #9dc4ec; font-size: 10px; font-weight: 600; }
 .sidebar select, .sidebar input { width: 100%; min-width: 0; height: 28px; padding: 3px 7px; border: 1px solid var(--sidebar-line); border-radius: 5px; background: #081a31; color: #e6eefb; font-size: 11px; }
@@ -175,6 +173,7 @@ tbody tr:hover { background: var(--accent-soft); }
 .dataset-toolbar select, .config-fields input, .config-fields select, .fields input, .fields select, .filter-controls input, .filter-controls select, .panel-head select, .pager select { min-width: 0; height: 32px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--ink); font-size: 11px; }
 .dataset-toolbar select { min-width: 220px; }
 .dataset-workspace { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 300px) minmax(240px, 300px); gap: 10px; align-items: stretch; flex: 1; min-height: 0; }
+.data-modeling-workspace { display: flex; flex: 1; min-height: 0; }
 .fused-section { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .fused-section + .fused-section { margin-top: 14px; }
 .section-heading { margin: 0; padding: 0 2px; color: #4a5f7a; font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
@@ -190,8 +189,7 @@ tbody tr:hover { background: var(--accent-soft); }
 .pivot-summary { padding: 10px 13px; color: var(--muted); font-size: 11px; }
 
 /* ---------- Merge ---------- */
-.merge-panel { margin-top: 10px; flex: 0 0 auto; }
-.merge-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 300px); gap: 12px; padding: 13px; }
+.merge-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 300px); gap: 12px; padding: 0; }
 .merge-select { display: grid; gap: 7px; align-content: start; }
 .merge-label { color: #4a5f7a; font-size: 11px; font-weight: 600; }
 .merge-options { display: grid; gap: 11px; align-content: start; }
@@ -210,6 +208,7 @@ tbody tr:hover { background: var(--accent-soft); }
 .analysis-nav-name { color: var(--ink); font-size: 11.5px; font-weight: 650; }
 .analysis-nav-desc { color: var(--muted); font-size: 10px; line-height: 1.35; }
 .analysis-detail { display: grid; gap: 10px; min-width: 0; }
+.form-panel { min-width: 0; }
 .catalog-search { width: min(260px, 35%); height: 33px; padding: 0 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--ink); font-size: 12px; }
 .runner-grid { display: grid; grid-template-columns: minmax(340px, 470px) minmax(300px, 1fr); gap: 10px; align-items: start; margin-top: 12px; }
 .fields { display: grid; gap: 12px; padding: 13px; max-height: calc(100vh - 320px); overflow: auto; }
@@ -226,11 +225,20 @@ tbody tr:hover { background: var(--accent-soft); }
 .result-ready { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 11px 13px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; }
 
 /* ---------- Table builder ---------- */
-.table-builder-grid { display: grid; grid-template-columns: minmax(320px, 380px) minmax(0, 1fr); gap: 10px; align-items: stretch; flex: 1; min-height: 0; }
+.table-builder-grid { display: grid; grid-template-columns: minmax(0, 2.1fr) minmax(330px, 0.86fr); gap: 18px; align-items: stretch; flex: 1; min-height: 0; width: 100%; }
+.table-preview-column { display: flex; min-width: 0; min-height: 0; }
+.table-preview-column > .panel { flex: 1; border-color: #c8d8e9; box-shadow: 0 2px 7px #1f2f4510; }
+.preview-panel .table-wrap { min-height: 0; }
+.preview-column-head { display: grid; gap: 5px; min-width: 100px; }
+.preview-column-head .sort-button { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.preview-column-head select { width: 100%; height: 24px; padding: 2px 5px; border: 1px solid #cad8e8; border-radius: 4px; background: #fff; color: var(--accent-strong); font-size: 9.5px; }
+.variables-panel { min-width: 0; position: relative; border-color: #c0d2e6; background: #fbfdff; box-shadow: 0 2px 8px #1f2f4514; }
 .config-fields { display: grid; gap: 12px; padding: 12px 14px; flex: 0 0 auto; }
 .table-recipe-summary { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
-.variable-list { display: grid; gap: 5px; overflow: auto; padding: 10px; flex: 1; min-height: 0; align-content: start; }
-.variable-card { display: grid; gap: 7px; padding: 8px 10px; border: 1px solid var(--line); border-left: 3px solid transparent; border-radius: 6px; background: var(--surface); }
+.variable-grid-heading { display: grid; grid-template-columns: minmax(80px, 1fr) repeat(4, 48px); gap: 3px; padding: 7px 8px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 9.5px; font-weight: 650; text-align: center; }
+.variable-grid-heading span:first-child { text-align: left; }
+.variable-list { display: grid; gap: 0; overflow: auto; padding: 0; flex: 1; min-height: 0; align-content: start; }
+.variable-card { display: grid; grid-template-columns: minmax(80px, 1fr) repeat(4, 48px); gap: 3px; align-items: center; min-width: 0; padding: 4px 7px; border: 0; border-bottom: 1px solid #edf1f6; border-left: 2px solid transparent; border-radius: 0; background: var(--surface); }
 .variable-card.role-row { border-left-color: var(--success); background: #f2fbf7; }
 .variable-card.role-column { border-left-color: var(--purple); background: #f5f3fd; }
 .variable-card.role-value { border-left-color: var(--accent); background: var(--accent-soft); }
@@ -238,6 +246,8 @@ tbody tr:hover { background: var(--accent-soft); }
 .variable-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .variable-name { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; color: var(--ink); overflow: hidden; }
 .variable-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.variable-name { display: grid; justify-items: start; gap: 1px; min-width: 0; font-size: 10.5px; }
+.variable-name small { max-width: 100%; overflow: hidden; color: var(--muted); font-size: 8.5px; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .variable-type { color: var(--muted); font-size: 9.5px; }
 .role-buttons { display: flex; gap: 4px; flex-wrap: wrap; }
 .role-buttons button { padding: 3px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: #4a5f7a; font-size: 10px; }
@@ -247,8 +257,16 @@ tbody tr:hover { background: var(--accent-soft); }
 .role-buttons button.active.role-column { background: var(--purple); }
 .role-buttons button.active.role-value { background: var(--accent); }
 .role-buttons button.active.role-filter { background: var(--warning); }
+.role-button { width: 100%; min-width: 0; padding: 4px 0; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-soft); color: #4a5f7a; font-size: 8px; white-space: nowrap; }
+.role-button.active { border-color: transparent; color: #fff; font-weight: 650; }
+.role-button.active.role-row { background: var(--success); }
+.role-button.active.role-column { background: var(--purple); }
+.role-button.active.role-value { background: var(--accent); }
+.role-button.active.role-filter { background: var(--warning); }
 .trash-button { border: 0; background: transparent; color: var(--danger); font-size: 12px; padding: 0 3px; }
 .variable-extras { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.variable-card > .variable-extras, .variable-card > .filter-values { grid-column: 1 / -1; padding: 2px 0 3px; }
+.variable-extras small { color: var(--muted); font-size: 9px; }
 .variable-extras select { height: 27px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 10.5px; }
 .variable-extras label { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 10px; }
 .variable-extras input[type="checkbox"] { width: 13px; height: 13px; accent-color: var(--accent); }
@@ -265,6 +283,90 @@ tbody tr:hover { background: var(--accent-soft); }
 .filter-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preview-meta { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 10.5px; }
 .preview-hint { padding: 26px 16px; color: var(--muted); font-size: 12px; text-align: center; }
+.filter-modal-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: #0b1c337a; backdrop-filter: blur(2px); }
+.filter-modal { display: flex; flex-direction: column; width: min(520px, calc(100vw - 40px)); max-height: min(680px, calc(100vh - 40px)); overflow: hidden; border: 1px solid #d5dfeb; border-radius: 8px; background: var(--surface); box-shadow: 0 22px 60px #0b1c3345; }
+.filter-modal-head, .filter-modal-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 16px; }
+.filter-modal-head { border-bottom: 1px solid var(--line); }
+.filter-modal-head h2 { margin: 0 0 3px; color: var(--ink); font-size: 15px; }
+.filter-modal-head p { margin: 0; color: var(--muted); font-size: 11px; }
+.filter-modal-body { display: grid; gap: 10px; min-height: 0; padding: 14px 16px; overflow: auto; }
+.filter-modal-body .filter-options { max-height: min(380px, 48vh); }
+.filter-modal-foot { justify-content: flex-end; border-top: 1px solid var(--line); background: var(--surface-soft); }
+.table-apply-backdrop { position: fixed; inset: 0; z-index: 110; display: grid; place-items: center; padding: 20px; background: #0b1c337a; backdrop-filter: blur(2px); }
+.table-apply-dialog { display: grid; justify-items: center; gap: 12px; width: min(420px, calc(100vw - 40px)); padding: 26px 28px; border: 1px solid #d5dfeb; border-radius: 10px; background: var(--surface); box-shadow: 0 22px 60px #0b1c3345; text-align: center; }
+.table-apply-dialog .loading { padding: 0; }
+.table-apply-dialog .spinner { width: 24px; height: 24px; flex-basis: 24px; border-width: 3px; }
+.table-apply-dialog h2 { margin: 0; color: var(--ink); font-size: 16px; }
+.table-apply-dialog p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.merge-modal { width: min(760px, calc(100vw - 40px)); }
+.merge-modal-body { gap: 12px; }
+.merge-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, 0.9fr); gap: 16px; min-height: 240px; }
+.merge-options { display: grid; align-content: start; gap: 10px; }
+
+/* ---------- Regression workbench ---------- */
+.regression-workbench { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(310px, .86fr); gap: 16px; padding: 14px; min-width: 0; }
+.regression-main, .regression-side { display: grid; align-content: start; gap: 12px; min-width: 0; }
+.regression-top-fields { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(180px, .72fr); gap: 12px; }
+.regression-top-fields label, .regression-target { display: grid; gap: 5px; color: #405673; font-size: 11px; font-weight: 650; }
+.regression-top-fields select, .regression-target select, .interaction-controls select { width: 100%; min-width: 0; height: 34px; padding: 5px 9px; border: 1px solid #cad8e8; border-radius: 6px; background: var(--surface); color: var(--ink); font-size: 11px; }
+.regression-chart-card, .regression-variable-section, .regression-events-section, .regression-extra-config { min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.regression-chart-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 13px; border-bottom: 1px solid var(--line); }
+.regression-chart-head h3, .regression-variable-title h3, .regression-extra-config h3 { margin: 0 0 3px; color: var(--ink); font-size: 13px; }
+.regression-chart-head p, .regression-variable-title p, .regression-extra-config p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.regression-chart-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.check-inline { display: inline-flex; align-items: center; gap: 4px; color: #4a5f7a; font-size: 10px; white-space: nowrap; }
+.check-inline input { accent-color: var(--accent); }
+.check-inline select { height: 27px; padding: 2px 5px; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: #405673; font-size: 9px; }
+.regression-chart-wrap { position: relative; min-height: 300px; padding: 6px 9px 8px; overflow: hidden; }
+.regression-chart-wrap > svg { display: block; width: 100%; max-height: min(48vh, 440px); min-height: 270px; touch-action: pan-y; background: #fff; }
+.regression-chart-wrap.marking-events > svg { cursor: crosshair; touch-action: none; }
+.regression-chart-wrap > .loading { min-height: 260px; }
+.regression-gridline { stroke: #e8edf4; stroke-width: 1; }
+.regression-axis { stroke: #b9c7d8; stroke-width: 1; }
+.regression-axis-label { fill: #62758d; font-size: 12px; text-anchor: middle; }
+.regression-date-label { fill: #6c7d91; font-size: 11px; }
+.regression-event-shade { fill: #e49b37; opacity: .17; pointer-events: none; }
+.regression-event-label { fill: #885c1c; font-size: 10px; font-weight: 700; pointer-events: none; }
+.event-instruction { position: absolute; z-index: 1; top: 4px; left: 50%; transform: translateX(-50%); margin: 0; padding: 5px 9px; border-radius: 5px; background: #fff7e8; color: #805817; font-size: 10px; pointer-events: none; }
+.regression-legend { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; padding: 3px 12px 8px; color: #405673; font-size: 10px; }
+.regression-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.regression-legend i, .variable-color { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+.regression-legend .target-legend { width: 16px; height: 3px; border-radius: 0; background: #286fae; }
+.regression-legend small { margin-left: auto; color: var(--muted); font-size: 9px; }
+.regression-side { position: sticky; top: 4px; }
+.regression-target { padding: 11px 12px; border: 1px solid var(--line); border-radius: 8px; background: #f7faff; }
+.regression-variable-section, .regression-events-section { display: grid; gap: 8px; padding: 10px; }
+.regression-variable-title { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
+.regression-variable-title > span { color: var(--muted); font-size: 9px; white-space: nowrap; }
+.regression-variable-head, .regression-variable-row { display: grid; grid-template-columns: minmax(0, 1fr) 70px 38px 36px 8px; align-items: center; gap: 5px; }
+.regression-variable-head { padding: 3px 5px; color: var(--muted); font-size: 9px; font-weight: 650; }
+.regression-variable-list { display: grid; max-height: min(34vh, 330px); min-height: 90px; overflow: auto; border: 1px solid #e5ebf3; border-radius: 6px; }
+.regression-variable-row { min-height: 34px; padding: 4px 5px; border-bottom: 1px solid #edf1f6; }
+.regression-variable-row.selected { background: #f5f9ff; }
+.regression-variable-name { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--ink); font-size: 10px; }
+.regression-variable-name input { flex: 0 0 auto; accent-color: var(--accent); }
+.regression-variable-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.regression-variable-row select { width: 100%; min-width: 0; height: 25px; padding: 2px 3px; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: #405673; font-size: 9px; }
+.correlation-value, .vif-value { color: #53677f; font-size: 9px; text-align: center; font-variant-numeric: tabular-nums; }
+.vif-value.high { color: #b3433d; font-weight: 700; }
+.variable-color { width: 8px; height: 8px; }
+.vif-note, .regression-help { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.registered-events { display: grid; gap: 5px; max-height: 180px; overflow: auto; }
+.registered-events > p { margin: 0; padding: 12px 8px; border: 1px dashed var(--line); border-radius: 5px; color: var(--muted); font-size: 10px; text-align: center; }
+.registered-event { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center; gap: 6px; padding: 6px; border: 1px solid #e5ebf3; border-radius: 5px; }
+.registered-event strong, .registered-event span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.registered-event strong { color: var(--ink); font-size: 10px; }
+.registered-event span { color: var(--muted); font-size: 9px; }
+.registered-event button { width: 24px; height: 24px; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: #526780; }
+.registered-event input { width: 100%; min-width: 0; height: 26px; border: 1px solid var(--line); border-radius: 4px; padding: 3px 5px; }
+.regression-extra-config { display: grid; gap: 8px; padding: 11px 13px; }
+.interaction-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; align-items: center; gap: 7px; }
+.interaction-controls .quiet-button { padding: 6px 10px; }
+.interaction-list { display: flex; gap: 6px; flex-wrap: wrap; padding: 0; margin: 0; list-style: none; }
+.interaction-list li { display: inline-flex; align-items: center; gap: 6px; padding: 4px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-strong); font-size: 9px; }
+.interaction-list button { border: 0; background: transparent; color: inherit; }
+.regression-run-button { min-height: 38px; }
+.chart-position { max-width: 360px; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 
 /* ---------- Results ---------- */
 .result-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 12px; }
@@ -316,7 +418,7 @@ tbody tr:hover { background: var(--accent-soft); }
   .kpi-row { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .dataset-workspace { grid-template-columns: minmax(0, 1fr) minmax(200px, 240px) minmax(200px, 240px); }
   .runner-grid { grid-template-columns: minmax(300px, 42%) minmax(0, 1fr); }
-  .table-builder-grid { grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); }
+  .table-builder-grid { grid-template-columns: minmax(0, 1.45fr) minmax(300px, 1fr); }
   .analysis-workspace { grid-template-columns: minmax(220px, 260px) minmax(0, 1fr); }
 }
 @media (max-width: 1000px) {
@@ -327,6 +429,9 @@ tbody tr:hover { background: var(--accent-soft); }
   .dataset-workspace { grid-template-columns: 1fr; }
   .column-list { max-height: 200px; }
   .table-builder-grid { grid-template-columns: 1fr; }
+  .regression-workbench { grid-template-columns: 1fr; }
+  .regression-side { position: static; }
+  .merge-grid { grid-template-columns: 1fr; }
   .runner-grid { grid-template-columns: 1fr; }
   .analysis-workspace { grid-template-columns: 1fr; }
   .analysis-nav { max-height: 260px; }
@@ -364,3 +469,497 @@ tbody tr:hover { background: var(--accent-soft); }
   .toolbar-actions { flex-wrap: wrap; }
   .page-header h1 { font-size: 18px; }
 }
+
+/* Regression reference layout */
+.shell:has(.regression-page) { grid-template-columns: 273px minmax(0, 1fr); }
+.content:has(.regression-page) { padding: 17px 19px 14px; background: #f5f9fd; overflow: auto; }
+.regression-page { max-width: none !important; }
+.regression-page-header { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 15px; }
+.regression-page-header h1 { margin: 0 0 5px; color: #0d2143; font-size: clamp(21px, 1.7vw, 26px); font-weight: 750; letter-spacing: -.5px; }
+.regression-page-header p { margin: 0; color: #61799d; font-size: 13px; }
+.regression-save { min-width: 176px; height: 40px; display: flex; align-items: center; justify-content: space-around; flex: 0 0 auto; color: #153159; }
+.regression-save span { margin-left: 10px; font-size: 16px; }
+.regression-workbench { display: grid; grid-template-columns: minmax(250px, 300px) minmax(430px, 1.62fr) minmax(295px, 361px); gap: 7px; align-items: stretch; flex: 1; min-height: 0; padding: 0; }
+.regression-card { min-width: 0; border: 1px solid #d7e6f6; border-radius: 7px; background: #fff; box-shadow: 0 1px 4px #12365d0a; }
+.regression-card-heading { padding: 13px 14px 7px; }
+.regression-card-heading h2 { margin: 0 0 4px; color: #0c2143; font-size: 15px; font-weight: 750; }
+.regression-card-heading p { margin: 0; color: #6880a3; font-size: 11px; }
+.regression-config-card { display: flex; flex-direction: column; overflow: hidden; }
+.regression-steps { position: relative; display: flex; flex-direction: column; gap: 12px; min-height: 0; padding: 5px 12px 14px; overflow: auto; }
+.regression-steps::before { content: ""; position: absolute; top: 23px; bottom: 80px; left: 28px; width: 2px; background: #dceafa; }
+.regression-step { position: relative; display: grid; grid-template-columns: 31px minmax(0, 1fr); gap: 10px; }
+.step-number { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(145deg,#147add,#0051a8); color: #fff; font-size: 12px; font-weight: 750; }
+.step-content { display: grid; align-content: start; gap: 4px; min-width: 0; }
+.step-content h3 { margin: 1px 0 0; color: #0062c9; font-size: 12px; font-weight: 750; }
+.step-content h3 span { font-weight: 600; }
+.step-content > p, .step-subfield { margin: 0; color: #6c83a3; font-size: 10.5px; line-height: 1.3; }
+.step-content > select, .step-subfield select { width: 100%; min-width: 0; height: 34px; margin-top: 2px; padding: 5px 8px; border: 1px solid #d6e4f3; border-radius: 5px; background: #fff; color: #132a4d; font-size: 11px; }
+.step-subfield { display: grid; gap: 2px; margin-top: 4px; color: #3370b2; font-weight: 650; }
+.step-subfield select { margin-top: 0; }
+.regression-predictor-step { flex: 1 1 auto; min-height: 0; }
+.regression-predictor-step .step-content { min-height: 0; }
+.regression-search { display: flex; align-items: center; height: 32px; margin: 2px 0; border: 1px solid #d7e4f2; border-radius: 5px; background: #fbfdff; }
+.regression-search span { padding: 0 8px; color: #60799c; font-size: 20px; }
+.regression-search input { width: 100%; height: 100%; padding: 3px 7px 3px 0; border: 0; outline: 0; background: transparent; color: #193353; font-size: 10.5px; }
+.regression-checklist { min-height: 128px; max-height: min(26vh,245px); overflow: auto; border: 1px solid #e5eef7; border-radius: 5px; scrollbar-width: thin; }
+.regression-checkitem { display: grid; grid-template-columns: 17px minmax(0,1fr) 13px; align-items: center; gap: 5px; min-height: 24px; padding: 2px 8px; color: #1c3355; font-size: 10.5px; cursor: pointer; }
+.regression-checkitem:hover { background: #f2f7fd; }
+.regression-checkitem input { width: 14px; height: 14px; margin: 0; accent-color: #066bd4; }
+.regression-checkitem span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.regression-checkitem i { width: 12px; height: 12px; border-radius: 2px; }
+.regression-list-actions { display: flex; justify-content: space-between; gap: 4px; }
+.regression-list-actions button { border: 0; padding: 2px 0; background: transparent; color: #0068d6; font-size: 10px; }
+.selected-caption { color: #183253; font-size: 10px; }
+.regression-chips { display: flex; align-content: flex-start; flex-wrap: wrap; gap: 4px; max-height: 62px; overflow: auto; }
+.regression-chips button { display: inline-flex; gap: 5px; max-width: 100%; padding: 3px 5px; border: 0; border-radius: 3px; background: #e9f3ff; color: #0067d3; font-size: 9.5px; }
+.regression-event-step { flex: 0 0 auto; }
+.regression-add-event { height: 31px; border: 1px solid #cfe1f5; border-radius: 5px; background: #f8fbff; color: #0064c9; font-size: 10.5px; }
+.regression-run-button { width: 100%; min-height: 31px; margin-top: 2px; padding: 6px 10px !important; font-size: 11px !important; }
+.regression-help { color: #687e9a; font-size: 9.5px; }
+.regression-interactions { margin-top: 3px; color: #386a9c; font-size: 10px; }
+.regression-interactions summary { cursor: pointer; }
+.regression-interactions p { color: #7387a2; font-size: 9.5px; }
+.regression-interactions .interaction-controls { grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); gap: 3px; }
+.regression-interactions .interaction-controls select { height: 28px; width: 100%; min-width: 0; font-size: 9px; }
+.regression-interactions .interaction-controls button { grid-column: 1/-1; height: 27px; border: 1px solid #cfe1f5; border-radius: 4px; background: #f6faff; color: #0064c9; font-size: 10px; }
+.regression-interactions .interaction-list { margin-top: 5px; }
+.regression-center, .regression-right { display: flex; flex-direction: column; gap: 7px; min-width: 0; min-height: 0; }
+.regression-explore-card { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.regression-plot-toolbar { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; padding: 3px 13px 5px; }
+.regression-plot-toolbar button { min-height: 30px; padding: 5px 10px; font-size: 10px; }
+.regression-plot-toolbar .icon-button { min-width: 30px; padding: 3px; font-size: 20px; line-height: 1; }
+.regression-plot-toolbar button.active { background: #0050a7; }
+.regression-chart-wrap { flex: 1 1 auto; min-height: 300px; padding: 0 7px; overflow: hidden; }
+.regression-chart-wrap > svg { width: 100%; height: auto; max-height: none; min-height: 0; aspect-ratio: 1000/650; background: #fff; }
+.regression-plot-title { fill: #0f2343; font-size: 20px; font-weight: 750; }
+.regression-gridline { stroke: #e7edf4; stroke-width: 1; }
+.regression-plot-border { fill: none; stroke: #536075; stroke-width: 1.5; pointer-events: none; }
+.regression-y-target { fill: #006ef0; font-size: 14px; }
+.regression-y-z { fill: #627794; font-size: 14px; }
+.regression-axis-label { fill: #586e8f; font-size: 16px; text-anchor: middle; }
+.regression-axis-label.target-axis-label { fill: #0672f9; font-weight: 650; }
+.regression-date-label { fill: #293f5d; font-size: 13px; }
+.regression-event-shade { fill: #ff586a; opacity: .13; pointer-events: none; }
+.regression-event-edge { stroke: #ff5268; stroke-width: 1.5; pointer-events: none; }
+.regression-event-tag { fill: #f75574; pointer-events: none; }
+.regression-event-label { fill: white; font-size: 13px; font-weight: 650; pointer-events: none; }
+.regression-drag-shade { fill: #1389ef; opacity: .18; pointer-events: none; }
+.regression-svg-legend rect { fill: #ffffffed; stroke: #dce7f3; }
+.regression-svg-legend text { fill: #233653; font-size: 13px; }
+.event-instruction { top: 8px; background: #eaf5ff; color: #005dbd; box-shadow: 0 2px 6px #0c3d6720; }
+.regression-plot-options { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 7px; padding: 3px 12px 7px; color: #466181; font-size: 10px; }
+.regression-plot-options label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.regression-plot-options input { accent-color: #066bd4; }
+.regression-plot-options select { height: 23px; border: 1px solid #d4e2f2; border-radius: 4px; background: #fff; color: #183452; font-size: 10px; }
+.regression-plot-options small { color: #8498b2; font-size: 9px; }
+.regression-no-points { padding: 30px; text-align: center; }
+.regression-navigator { padding: 0 16px 12px; }
+.regression-navigator-track { position: relative; height: 43px; overflow: hidden; border: 1px solid #b6d8fa; border-radius: 4px; background: #e9f4ff; }
+.regression-navigator-track svg { display: block; width: 100%; height: 100%; }
+.regression-window { position: absolute; top: 0; bottom: 0; border: 2px solid #399cff; background: #75bcff20; pointer-events: none; }
+.regression-navigator-track input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: ew-resize; }
+.regression-events-card { flex: 0 0 auto; min-height: 132px; }
+.regression-event-table { margin: 0 13px 12px; border: 1px solid #dce8f4; border-radius: 4px; overflow: auto; }
+.regression-event-table-head, .regression-event-table-row { display: grid; grid-template-columns: minmax(105px,1.3fr) minmax(76px,1fr) minmax(76px,1fr) minmax(61px,.75fr) minmax(55px,.7fr) 62px; align-items: center; gap: 4px; min-width: 510px; padding: 7px 9px; }
+.regression-event-table-head { background: #f3f8fe; color: #445e81; font-size: 9.5px; }
+.regression-event-table-row { border-top: 1px solid #e8eff7; color: #243958; font-size: 10px; }
+.regression-event-table-row strong { display: flex; align-items: center; gap: 6px; overflow: hidden; white-space: nowrap; font-weight: 600; }
+.regression-event-table-row strong i { flex: 0 0 auto; width: 11px; height: 11px; border: 2px solid #ff5070; border-radius: 50%; }
+.regression-event-actions { display: flex; gap: 4px; }
+.regression-event-actions button { border: 0; padding: 2px 3px; background: transparent; color: #0068d5; font-size: 16px; }
+.regression-event-actions button:last-child { color: #ff4166; }
+.regression-event-table > p { padding: 13px; margin: 0; color: #7187a3; font-size: 10px; }
+.regression-summary-card { flex: 0 0 auto; padding-bottom: 11px; }
+.regression-summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding: 5px 12px 8px; }
+.regression-summary-grid article { position: relative; min-height: 76px; display: flex; flex-direction: column; justify-content: space-between; padding: 10px 11px; border: 1px solid #dbe7f4; border-left: 2px solid var(--summary-color); border-radius: 6px; }
+.regression-summary-grid article span { color: #6880a2; font-size: 10px; }
+.regression-summary-grid article strong { color: #0f2344; font-size: 20px; font-weight: 750; }
+.regression-summary-grid article b { position: absolute; right: 9px; top: 13px; color: var(--summary-color); font-size: 24px; }
+.summary-cyan { --summary-color: #00b9ce; }
+.summary-green { --summary-color: #04bb6e; }
+.summary-purple { --summary-color: #8a49ff; }
+.summary-amber { --summary-color: #ffad17; }
+.regression-ready { display: flex; align-items: center; gap: 11px; min-height: 61px; margin: 1px 12px 0; padding: 9px 13px; border: 1px solid #9ae4c0; border-radius: 6px; background: #effcf5; }
+.regression-ready > span { display: grid; place-items: center; flex: 0 0 auto; width: 29px; height: 29px; border-radius: 50%; background: #08b76d; color: #fff; font-size: 20px; font-weight: 800; }
+.regression-ready strong { color: #009c59; font-size: 12px; }
+.regression-ready p { margin: 2px 0 0; color: #607994; font-size: 10px; }
+.regression-ready.needs-input { border-color: #f0d6a3; background: #fffaf0; }
+.regression-ready.needs-input > span { background: #d89323; }
+.regression-ready.needs-input strong { color: #a56b13; }
+.regression-selected-card { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.regression-variable-table { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; margin: 3px 12px 0; overflow: hidden; }
+.regression-variable-head, .regression-variable-row { display: grid; grid-template-columns: minmax(0,1fr) 53px 39px 34px 18px; align-items: center; gap: 5px; padding: 5px 7px; }
+.regression-variable-head { flex: 0 0 auto; min-height: 31px; border-radius: 4px 4px 0 0; background: #f2f7fd; color: #486080; font-size: 9.5px; text-align: center; }
+.regression-variable-head span:first-child { text-align: left; padding-left: 17px; }
+.regression-variable-list { display: block; flex: 1 1 auto; min-height: 80px; max-height: none; overflow: auto; border: 1px solid #e4ecf5; border-radius: 0 0 4px 4px; scrollbar-width: thin; }
+.regression-variable-row { min-height: 32px; border-bottom: 1px solid #e8eef5; }
+.regression-variable-row.selected { background: #f5f9ff; }
+.regression-variable-name { font-size: 10px; }
+.regression-variable-name input { width: 14px; height: 14px; margin: 0; accent-color: #006bd6; }
+.regression-variable-row select { height: 22px; padding: 1px; font-size: 9px; }
+.correlation-value { color: #f06c00; font-size: 10px; font-weight: 650; }
+.vif-value { color: #04a45c; font-size: 10px; font-weight: 650; }
+.vif-value.high { color: #e45350; }
+.variable-color { width: 12px; height: 12px; border-radius: 2px; }
+.vif-note { padding: 8px 12px 11px; font-size: 9px; }
+.regression-job-status { display: flex; align-items: center; gap: 12px; padding: 8px; color: #536d8d; font-size: 11px; }
+.regression-job-status button { margin-left: auto; }
+.regression-event-overlay { position: fixed; z-index: 70; inset: 0; display: grid; place-items: center; padding: 18px; background: #061b36a8; }
+.regression-event-dialog { width: min(420px,100%); display: grid; gap: 10px; padding: 20px; border: 1px solid #b7d4ee; border-radius: 9px; background: #fff; box-shadow: 0 20px 55px #061b3680; }
+.regression-event-dialog h2 { margin: 0; color: #10284b; font-size: 18px; }
+.regression-event-dialog p { margin: 0; color: #667e9a; font-size: 11px; }
+.regression-event-dialog label { display: grid; gap: 5px; color: #2e527d; font-size: 11px; font-weight: 650; }
+.regression-event-dialog input { width: 100%; height: 35px; padding: 5px 8px; border: 1px solid #d0e0f0; border-radius: 5px; background: #fff; color: #142e51; }
+.regression-event-dates { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.regression-event-dialog-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 5px; }
+@media (max-width: 1460px) { .regression-workbench { grid-template-columns: minmax(230px,270px) minmax(385px,1.5fr) minmax(270px,330px); } }
+@media (max-width: 1200px) {
+  .shell:has(.regression-page) { grid-template-columns: 208px minmax(0,1fr); }
+  .regression-workbench { grid-template-columns: minmax(250px,1fr) minmax(470px,1.7fr); }
+  .regression-config-card { grid-column: 1; }
+  .regression-center { grid-column: 2; }
+  .regression-right { grid-column: 1/-1; display: grid; grid-template-columns: minmax(250px,.9fr) minmax(0,1.6fr); }
+  .regression-selected-card { min-height: 390px; }
+}
+@media (max-width: 940px) {
+  .regression-workbench { display: flex; flex-direction: column; }
+  .regression-config-card, .regression-explore-card, .regression-selected-card { min-height: 420px; }
+  .regression-right { display: flex; }
+  .regression-page-header { align-items: flex-start; flex-direction: column; }
+}
+
+
+.kpi-icon { display: none; }
+.shell:has(.regression-page) .topbar { height: 50px; flex-basis: 50px; }
+.shell:has(.regression-page) .kpi-row { gap: 14px; padding: 14px 19px; }
+.shell:has(.regression-page) .kpi-card { min-height: 62px; grid-template-columns: 46px minmax(0,1fr); grid-template-rows: 1fr 1fr; align-items: center; column-gap: 10px; padding: 7px 10px; border-left-width: 2px; }
+.shell:has(.regression-page) .kpi-icon { display: grid; grid-row: 1/3; grid-column: 1; place-items: center; width: 42px; height: 42px; border-radius: 10px; background: #e8f3ff; color: #0874ed; font-size: 27px; font-style: normal; font-weight: 700; }
+.shell:has(.regression-page) .kpi-card.tone-purple .kpi-icon { background: #f1e9ff; color: #8553f5; }
+.shell:has(.regression-page) .kpi-card.tone-success .kpi-icon { background: #e5faee; color: #05b770; }
+.shell:has(.regression-page) .kpi-card.tone-warning .kpi-icon { background: #fff3d9; color: #efa012; }
+.shell:has(.regression-page) .kpi-card span { grid-column: 2; align-self: end; font-size: 10px; }
+.shell:has(.regression-page) .kpi-card strong { grid-column: 2; align-self: start; font-size: 17px; }
+.shell:has(.regression-page) .tabs { padding-top: 0; }
+.shell:has(.regression-page) .tabs button { padding: 12px 15px; }
+
+
+/* Readability refinements from the full-size review */
+.regression-step:first-child .step-content { grid-template-columns: minmax(0,1fr) minmax(0,1fr); column-gap: 6px; }
+.regression-step:first-child .step-content h3,
+.regression-step:first-child .step-content > p { grid-column: 1/-1; }
+.regression-step:first-child .step-content > select { grid-column: 1; margin-top: 12px; }
+.regression-step:first-child .step-subfield { grid-column: 2; grid-row: 3; margin-top: 0; font-size: 10px; }
+.regression-step:first-child .step-subfield select { margin-top: 0; }
+.regression-checkitem { font-size: 11.5px; }
+.regression-variable-name, .regression-event-table-row { font-size: 11px; }
+.regression-plot-title { font-size: 22px; }
+.regression-y-target, .regression-y-z { font-size: 17px; }
+.regression-axis-label { font-size: 18px; }
+.regression-date-label, .regression-svg-legend text, .regression-event-label { font-size: 16px; }
+
+
+.regression-steps { gap: 9px; }
+.regression-step:first-child .step-content > select { margin-top: 0; }
+.regression-step:first-child .step-subfield { gap: 0; font-size: 0; line-height: 0; }
+.regression-step:first-child .step-subfield select { font-size: 11px; line-height: normal; }
+.regression-checkitem { min-height: 22px; }
+
+
+.regression-save-menu { position: relative; z-index: 5; flex: 0 0 auto; }
+.regression-save-menu summary { list-style: none; cursor: pointer; }
+.regression-save-menu summary::-webkit-details-marker { display: none; }
+.regression-save-menu > div { position: absolute; top: calc(100% + 5px); right: 0; width: 220px; padding: 5px; border: 1px solid #d5e3f1; border-radius: 6px; background: #fff; box-shadow: 0 8px 23px #102e532a; }
+.regression-save-menu > div button { display: block; width: 100%; padding: 9px 8px; border: 0; border-radius: 4px; background: transparent; color: #1d426c; text-align: left; font-size: 11px; }
+.regression-save-menu > div button:hover { background: #eaf4ff; }
+
+
+/* Keep each regression panel independent at Windows display scaling */
+.regression-config-card { min-height: 0; }
+.regression-steps { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto; }
+.regression-predictor-step { flex: 0 0 auto; min-height: auto; }
+.regression-predictor-step .step-content { min-height: auto; }
+.regression-checklist { flex: 0 0 auto; height: 166px; min-height: 0; max-height: 166px; overflow-y: auto; }
+.regression-summary-card .regression-card-heading { padding: 11px 12px 5px; }
+.regression-summary-grid { grid-auto-rows: 65px; gap: 6px; padding: 4px 11px 7px; }
+.regression-summary-grid article { min-height: 0; padding: 8px 10px; }
+.regression-ready { min-height: 51px; margin: 0 11px; padding: 6px 10px; }
+.regression-selected-card { min-height: 260px; }
+.regression-event-table-head, .regression-event-table-row {
+  grid-template-columns: minmax(75px,1.1fr) minmax(68px,1fr) minmax(68px,1fr) 52px 43px 48px;
+  min-width: 0; gap: 3px; padding: 7px 6px;
+}
+.regression-event-actions { gap: 1px; }
+
+/* Regression workspace: one configuration panel and one wide chart area. */
+.regression-workbench { grid-template-columns: minmax(405px, 36%) minmax(0, 1fr); gap: 10px; }
+.regression-center { min-width: 0; }
+.regression-config-card { min-width: 0; }
+.regression-variable-table.regression-config-variables { display: flex; flex-direction: column; flex: none; min-height: 0; margin: 3px 0 0; }
+.regression-config-variables .regression-variable-head,
+.regression-config-variables .regression-variable-row {
+  grid-template-columns: minmax(0, 1fr) 58px 68px 30px 22px;
+  gap: 3px;
+  padding: 5px 3px;
+}
+.regression-config-variables .regression-variable-head { font-size: 8.5px; }
+.regression-config-variables .regression-variable-head span:first-child { padding-left: 16px; }
+.regression-config-variables .regression-variable-list {
+  flex: none; height: clamp(110px, 13vh, 130px); min-height: 0; max-height: none; overflow-y: auto;
+}
+.regression-config-variables .regression-variable-name { font-size: 10px; }
+.regression-config-variables .regression-variable-row select { width: 100%; }
+.regression-config-variables .correlation-value { font-size: 9px; white-space: nowrap; }
+.regression-color-picker { width: 20px; height: 22px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.regression-color-picker::-webkit-color-swatch-wrapper { padding: 0; }
+.regression-color-picker::-webkit-color-swatch { border: 1px solid #d7e2ef; border-radius: 3px; }
+.regression-stat-note { margin: 2px 0 0; color: #7387a2; font-size: 9px; line-height: 1.25; }
+.regression-step:first-child .step-subfield { font-size: 10px; line-height: 1.2; }
+.regression-step:first-child .step-subfield select { margin-top: 1px; }
+.regression-chart-wrap { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+.regression-chart-wrap > svg { display: block; flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; max-height: 100%; aspect-ratio: auto; }
+.regression-plot-options { flex: 0 0 auto; }
+.regression-events-card { min-height: 140px; }
+.regression-event-table-head, .regression-event-table-row {
+  grid-template-columns: minmax(130px, 1.5fr) minmax(90px, 1fr) minmax(90px, 1fr) 72px 60px 65px;
+  gap: 6px; padding: 8px 10px;
+}
+@media (max-width: 1200px) {
+  .regression-workbench { grid-template-columns: minmax(340px, 40%) minmax(0, 1fr); }
+}
+@media (max-width: 940px) {
+  .regression-workbench { display: flex; flex-direction: column; }
+  .regression-config-card { min-height: 470px; }
+  .regression-explore-card { min-height: 500px; }
+}
+
+/* Compact regression workbench: controls occupy one shared row, leaving the
+   whole right panel for the temporal chart and a short event register. */
+.regression-workbench {
+  grid-template-columns: minmax(360px, 32%) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 9px 12px;
+}
+.regression-actions-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 40px;
+  padding: 0 1px;
+}
+.regression-date-control, .regression-display-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #486284;
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.regression-date-control select, .regression-display-controls select {
+  height: 30px;
+  min-width: 90px;
+  padding: 3px 8px;
+  border: 1px solid #cfdfef;
+  border-radius: 5px;
+  background: #fff;
+  color: #153354;
+  font-size: 10px;
+}
+.regression-display-controls, .regression-actions-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.regression-display-controls input { margin: 0; accent-color: #086fd6; }
+.regression-actions-right { margin-left: auto; gap: 6px; }
+.regression-actions-right button { min-height: 30px; padding: 5px 9px; font-size: 10px; white-space: nowrap; }
+.regression-actions-right button.active { background: #0755ab; }
+.regression-card-heading { padding: 10px 12px 5px; }
+.regression-card-heading h2 { font-size: 14px; }
+.regression-card-heading p { font-size: 10px; }
+.regression-steps { gap: 8px; padding: 5px 10px 11px; }
+.regression-step { grid-template-columns: 27px minmax(0,1fr); gap: 8px; }
+.regression-step .step-number { width: 25px; height: 25px; font-size: 10px; }
+.regression-step .step-content h3 { font-size: 11px; }
+.regression-step .step-content > p { font-size: 9.5px; }
+.regression-step:first-child .step-content { display: grid; grid-template-columns: 1fr; }
+.regression-step:first-child .step-content h3,
+.regression-step:first-child .step-content > p,
+.regression-step:first-child .step-content > select { grid-column: 1; }
+.regression-step .step-content > select { height: 30px; font-size: 10px; }
+.regression-search { height: 29px; }
+.regression-config-variables .regression-variable-head,
+.regression-config-variables .regression-variable-row {
+  grid-template-columns: minmax(0,1fr) 62px 38px 32px 20px;
+  gap: 4px;
+  padding: 4px 5px;
+}
+.regression-config-variables .regression-variable-head { min-height: 26px; font-size: 9px; }
+.regression-config-variables .regression-variable-list { height: clamp(155px, 22vh, 210px); }
+.regression-config-variables .regression-variable-row { min-height: 27px; }
+.regression-config-variables .regression-variable-name { font-size: 10px; }
+.regression-config-variables .regression-variable-row select { font-size: 9px; }
+.regression-config-variables .correlation-value, .regression-config-variables .vif-value { font-size: 9px; text-align: center; }
+.regression-chips { max-height: 48px; }
+.regression-chips > span:not(.muted) {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: #eaf4ff;
+  color: #1268c3;
+  font-size: 9px;
+}
+.regression-explore-card { min-height: 0; }
+.regression-chart-wrap { flex: 1 1 auto; min-height: 0; padding: 0 7px 4px; }
+.regression-chart-wrap > svg { flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; max-height: 100%; aspect-ratio: auto; }
+.regression-plot-title { font-size: 14px; }
+.regression-y-target, .regression-y-z { font-size: 10px; }
+.regression-axis-label { font-size: 11px; }
+.regression-date-label, .regression-svg-legend text, .regression-event-label { font-size: 10px; }
+.regression-events-card { min-height: 106px; }
+.regression-events-card .regression-card-heading { padding: 8px 12px 3px; }
+.regression-event-table { margin: 0 11px 9px; overflow: hidden; }
+.regression-event-table-head, .regression-event-table-row {
+  grid-template-columns: minmax(110px,1.5fr) minmax(74px,1fr) minmax(74px,1fr) minmax(48px,.5fr) 58px;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 9px;
+}
+.regression-event-table-row strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.regression-event-table-row strong i { width: 9px; height: 9px; }
+.regression-event-actions button { font-size: 13px; }
+.regression-event-table > p { padding: 10px; font-size: 9px; }
+@media (max-width: 1120px) {
+  .regression-workbench { grid-template-columns: minmax(320px, 38%) minmax(0, 1fr); }
+  .regression-actions-bar { flex-wrap: wrap; }
+}
+@media (max-width: 940px) {
+  .regression-workbench { display: flex; flex-direction: column; }
+  .regression-config-card { min-height: 480px; }
+  .regression-center { min-height: 510px; }
+  .regression-explore-card { min-height: 400px; }
+}
+
+/* Regression chart and event list share a stable height. The sidebar is unchanged. */
+.regression-steps { padding-left: 9px; padding-right: 9px; }
+.regression-steps::before { left: 18px; top: 15px; bottom: 28px; width: 1px; background: #c8ddf5; }
+.regression-step { grid-template-columns: 19px minmax(0, 1fr); gap: 6px; }
+.regression-step .step-number { width: 19px; height: 19px; font-size: 9px; position: relative; z-index: 1; }
+.regression-chart-legend { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; min-height: 27px; padding: 4px 12px 1px; overflow-x: auto; white-space: nowrap; scrollbar-width: thin; }
+.regression-legend-item { display: inline-flex; align-items: center; gap: 5px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; color: #29425f; font-size: 10px; }
+.regression-legend-item i { display: inline-block; flex: 0 0 16px; height: 3px; border-radius: 3px; }
+.regression-chart-legend small { margin-left: auto; color: #7b90aa; font-size: 9px; }
+.regression-chart-wrap { padding: 0 3px 3px; }
+.regression-chart-wrap > svg { width: 100%; height: 100%; }
+.regression-y-target, .regression-y-z { font-size: 10px; }
+.regression-axis-label { font-size: 10px; }
+.regression-date-label { font-size: 9px; }
+.regression-events-card { flex: 0 0 174px; height: 174px; min-height: 174px; max-height: 174px; display: flex; flex-direction: column; overflow: hidden; }
+.regression-event-table { flex: 1 1 auto; min-height: 0; margin: 0 9px 7px; overflow-y: auto; overflow-x: hidden; }
+.regression-event-table-head, .regression-event-table-row { grid-template-columns: minmax(0,1.6fr) 78px 78px 44px 48px; gap: 4px; min-width: 0; padding: 4px 6px; font-size: 9px; }
+.regression-event-table-head { position: sticky; top: 0; z-index: 1; }
+.regression-event-table-row { min-height: 23px; }
+.regression-event-table-row strong { display: block; text-overflow: ellipsis; }
+.regression-event-table-row strong i { display: inline-block; margin-right: 4px; vertical-align: middle; }
+.regression-event-actions { justify-content: flex-end; }
+
+/* Results use actual tables with compact, navigable sections. */
+.results-screen { min-width: 0; }
+.results-header { margin: 0 0 10px; }
+.results-header h1 { margin: 0 0 3px; color: #10284b; font-size: 19px; }
+.results-header p { margin: 0; color: #657c99; font-size: 10px; }
+.result-tabs, .result-chart-tabs { display: flex; gap: 5px; min-width: 0; padding: 0 0 9px; overflow-x: auto; scrollbar-width: thin; }
+.result-tabs button, .result-chart-tabs button { flex: 0 0 auto; max-width: 215px; padding: 7px 11px; border: 1px solid #d5e2f1; border-radius: 5px; background: #fff; color: #365575; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.result-tabs button.active, .result-chart-tabs button.active { border-color: #2f77c5; background: #eaf4ff; color: #0757ad; font-weight: 700; }
+.result-section { min-width: 0; overflow: hidden; }
+.result-section .panel-head { min-height: 45px; }
+.result-section .panel-head h2 { margin: 0; font-size: 13px; }
+.result-table-scroll { max-width: 100%; max-height: calc(100vh - 290px); overflow: auto; }
+.result-data-table { width: 100%; border-collapse: collapse; background: #fff; color: #1b3454; font-size: 10.5px; }
+.result-data-table thead th { position: sticky; top: 0; z-index: 1; border: 1px solid #dbe6f2; background: #edf4fb; color: #385775; font-weight: 700; text-align: left; white-space: nowrap; }
+.result-data-table th, .result-data-table td { min-width: 85px; padding: 8px 10px; border: 1px solid #e4ebf3; vertical-align: top; }
+.result-data-table tbody th { background: #f9fbfe; text-align: left; font-weight: 600; }
+.result-data-table tbody tr:nth-child(even) td { background: #f9fbfe; }
+.result-summary-table { max-width: 660px; }
+.result-summary-table th:first-child { width: 55%; }
+.result-chart-panel { overflow: hidden; }
+.result-chart-panel .panel-head h2 { margin: 0; font-size: 13px; }
+.result-chart-tabs { margin: 8px 12px 0; }
+.result-chart-body { display: grid; grid-template-columns: minmax(0, 1fr) 205px; gap: 10px; align-items: start; padding: 5px 12px 14px; }
+.result-chart-body .result-chart { display: block; width: 100%; max-width: none; max-height: calc(100vh - 270px); min-height: 300px; margin: 0; object-fit: contain; object-position: top center; }
+.result-chart-metrics { min-width: 0; border: 1px solid #dbe6f2; border-radius: 5px; overflow: hidden; }
+.result-chart-metrics h3 { margin: 0; padding: 9px; background: #f1f7fd; color: #284b70; font-size: 10px; }
+.result-chart-metrics .result-data-table th, .result-chart-metrics .result-data-table td { min-width: 0; padding: 6px; font-size: 9px; }
+.analysis-empty-page { display: grid !important; place-items: center; min-height: min(65vh, 560px); }
+.analysis-empty-state { max-width: 410px; padding: 30px; text-align: center; color: #6380a1; }
+.analysis-empty-state > span { display: block; margin-bottom: 13px; color: #5d9adb; font-size: 42px; }
+.analysis-empty-state h1 { margin: 0 0 6px; color: #18375d; font-size: 19px; }
+.analysis-empty-state p { margin: 0; font-size: 11px; line-height: 1.5; }
+.analysis-method-page { max-width: 1100px; }
+
+/* Preserve the sidebar and give the chart the spare width on large screens. */
+.regression-workbench { grid-template-columns: minmax(330px, 390px) minmax(0, 1fr); }
+.regression-page-header h1 { font-size: clamp(19px, 1.5vw, 24px); }
+.regression-page-header p { font-size: 11px; }
+@media (max-width: 1120px) {
+  .regression-workbench { display: flex; flex-direction: column; }
+  .regression-config-card { min-height: 0; max-height: none; }
+  .regression-steps { overflow: visible; }
+  .regression-center { min-height: 530px; }
+  .regression-explore-card { min-height: 360px; }
+  .regression-actions-bar { flex-wrap: wrap; }
+  .result-chart-body { grid-template-columns: 1fr; }
+  .result-chart-metrics { max-width: 480px; }
+}
+@media (max-height: 860px) and (min-width: 1121px) {
+  .regression-workbench { min-height: 630px; }
+}
+
+/* Keep the same column balance on laptop and desktop displays. */
+.analysis-section-heading { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.analysis-section-heading .section-title { flex: 0 0 auto; }
+.analysis-section-heading .analysis-cat { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; font-size: 9px; }
+.regression-workbench { grid-template-columns: clamp(305px, 24vw, 350px) minmax(0, 1fr); }
+.regression-events-card {
+  flex: 0 0 clamp(130px, 17vh, 154px);
+  height: clamp(130px, 17vh, 154px);
+  min-height: clamp(130px, 17vh, 154px);
+  max-height: clamp(130px, 17vh, 154px);
+}
+.result-chart-tabs { position: relative; z-index: 1; min-height: 42px; overflow-y: hidden; background: #fff; }
+.result-navigation { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 12px 0; }
+.result-navigation .result-tabs, .result-navigation .result-chart-tabs {
+  flex: 1 1 auto; min-width: 0; margin: 0; padding: 0 0 8px;
+}
+.result-save-all, .result-save-actions { flex: 0 0 auto; align-self: flex-start; }
+.result-save-actions { display: flex; gap: 6px; }
+.result-navigation .quiet-button { white-space: nowrap; font-size: 10px; padding: 7px 9px; }
+.export-analysis-dialog {
+  display: grid; gap: 14px; width: min(480px, calc(100vw - 40px));
+  padding: 22px; border: 1px solid #cdddf0; border-radius: 9px;
+  background: #fff; box-shadow: 0 20px 55px #061b3680;
+}
+.export-analysis-dialog h2 { margin: 0; color: #10284b; font-size: 17px; }
+.export-analysis-dialog p { margin: -7px 0 0; color: #61799d; font-size: 11px; line-height: 1.5; }
+.export-analysis-dialog label, .export-directory-field {
+  display: grid; gap: 5px; min-width: 0; color: #2e527d; font-size: 11px; font-weight: 650;
+}
+.export-analysis-dialog input { width: 100%; height: 36px; padding: 6px 9px; border: 1px solid #d0e0f0; border-radius: 5px; }
+.export-directory-field > div { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.export-directory-field output { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 8px; border: 1px solid #d0e0f0; border-radius: 5px; color: #435f80; font-weight: 400; }
+.export-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.export-dialog-actions button { min-width: 90px; padding: 7px 12px; }
+.result-chart-body { align-items: center; min-width: 0; }
+.result-chart-body .result-chart {
+  width: 100%; height: min(62vh, 600px); min-height: 0; max-height: none;
+  object-fit: contain; object-position: center;
+}
+@media (max-width: 1120px) {
+  .regression-workbench { display: flex; flex-direction: column; }
+  .result-chart-body .result-chart { height: min(58vh, 540px); }
+}
+

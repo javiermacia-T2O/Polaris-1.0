@@ -3,12 +3,13 @@ param([switch]$Clean)
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
 $python = Join-Path $workspace '.venv\Scripts\python.exe'
-$app = Join-Path $workspace 'MedicionAgil_Light\mmm_app'
-$core = Join-Path $workspace 'MedicionAgil_Light\python'
+$sidecarRoot = Join-Path $workspace 'src-tauri\sidecar-source'
+$app = Join-Path $sidecarRoot 'mmm_app'
+$core = Join-Path $sidecarRoot 'python'
 $entry = Join-Path $core 'medicion_sidecar.py'
-$dist = Join-Path $workspace 'MedicionAgil_Light\dist'
-$work = Join-Path $workspace 'MedicionAgil_Light\build\sidecar'
-$spec = Join-Path $workspace 'MedicionAgil_Light'
+$dist = Join-Path $sidecarRoot 'dist'
+$work = Join-Path $sidecarRoot 'build\sidecar'
+$spec = Join-Path $sidecarRoot 'build\spec'
 
 if (-not (Test-Path -LiteralPath $python)) {
     throw 'Falta .venv. Ejecuta scripts\bootstrap.ps1.'
@@ -40,6 +41,7 @@ $arguments = @(
     '--hidden-import', 'services.data_service',
     '--hidden-import', 'services.merge_service',
     '--hidden-import', 'services.table_service',
+    '--hidden-import', 'ui.figure_utils',
     '--hidden-import', 'core.plugin_loader',
     '--hidden-import', 'core.engine',
     '--hidden-import', 'core.loader',

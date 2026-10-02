@@ -29,10 +29,10 @@ dev = [
 package = false
 
 [tool.pytest.ini_options]
-testpaths = ["MedicionAgil_Light/tests"]
+testpaths = ["src-tauri/sidecar-source/tests"]
 pythonpath = [
-  "MedicionAgil_Light",
-  "MedicionAgil_Light/mmm_app",
-  "MedicionAgil_Light/python",
+  "src-tauri/sidecar-source",
+  "src-tauri/sidecar-source/mmm_app",
+  "src-tauri/sidecar-source/python",
 ]
 addopts = "-ra"

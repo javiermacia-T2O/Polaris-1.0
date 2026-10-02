@@ -18,7 +18,7 @@ WORKSPACE = Path(__file__).resolve().parent.parent
 SIDECAR = WORKSPACE / "src-tauri" / "target" / "debug" / "sidecar" / "medicion-sidecar.exe"
 TOKEN = "0123456789abcdef0123456789abcdef"
 CSV = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
-    r"C:\Users\javier.macia\Desktop\APP MEDICIÓN\MedicionAgil_Light\data\jamaica.csv")
+    r"C:\Users\javier.macia\Desktop\APP MEDICIÓN\data test\datos ga4 jamaica report 09-09-26.csv")
 
 
 class Client:

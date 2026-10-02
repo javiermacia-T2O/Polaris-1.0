@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
-    r"C:\Users\javier.macia\Desktop\APP MEDICIÓN\MedicionAgil_Light\data\mmm_demo.csv")
+    r"C:\Users\javier.macia\Desktop\APP MEDICIÓN\data test\mmm_demo.csv")
 
 rng = np.random.default_rng(42)
 dates = pd.date_range("2023-01-02", periods=104, freq="W-MON")

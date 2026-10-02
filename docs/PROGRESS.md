@@ -5,6 +5,85 @@ sesión. No borrar entradas: lo completado queda como historial.
 
 ## Tareas completadas
 
+- **Conteo inmediato, preview de 100 filas y filtros sobre el dataset completo**
+  (2026-10-01):
+  - El conteo exacto de un CSV grande ya no deja la UI en "contando…": se
+    calcula una estimación rápida muestreando bloques distribuidos del archivo
+    (`ActiveDataset.row_count_estimate`) y se muestra como `~N filas · exacto
+    en curso` en KPI, selector de datasets, vista previa y aviso de carga. El
+    total exacto sigue calculándose en segundo plano sobre el origen completo y
+    reemplaza la estimación al terminar. La estimación se memoiza por versión.
+  - Los Parquet responden el total exacto desde el footer del archivo
+    (`pq.read_metadata(...).num_rows`) sin programar ningún escaneo.
+  - La vista previa del constructor se limita a 100 filas
+    (`_PREVIEW_SOURCE_LIMIT = 100`, `preview_limit`), tanto en el SQL compilado
+    como en el `head` final. Es solo visual: `build_table` (Aplicar) sigue
+    agrupando/agregando todas las filas del origen.
+  - Los valores de filtro siguen consultándose con `DISTINCT` sobre el dataset
+    activo completo (no sobre la muestra) y ahora se cachean en memoria por
+    `(dataset, versión, columna, límite)` con LRU de 128 entradas; la segunda
+    apertura del modal es instantánea. Un valor fuera de las primeras 100 filas
+    sigue apareciendo y siendo seleccionable.
+  - Preview, búsqueda de valores y Aplicar emiten progreso por el canal
+    `sidecar://progress` ya existente; la UI muestra la etapa real
+    ("Consultando las primeras 100 filas…", "Buscando valores en todo el
+    dataset…", "Aplicando sobre el dataset completo…").
+  - Los botones Fila/Columna/Valor/Filtro pasan a columnas fijas de 52 px con
+    texto más compacto, sin cambiar su comportamiento.
+  - Verificación: backend afectado 73/73, Vitest 12/12, `npm run typecheck`,
+    `npm run build`; smoke del sidecar congelado `SMOKE_OK`.
+  - ZIP regenerado: `release/Polaris-0.1.0.zip` (268,6 MB).
+
+- **Reintentos de splash y modelado de variables** (2026-10-01):
+  - La splash reintenta de forma silenciosa el registro de listeners y la
+    señal `splash_ready` ante fallos transitorios del bridge; el mensaje de
+    conexión solo aparece tras agotar los reintentos. Bridge tardío y dos
+    rechazos transitorios verificados con jsdom, sin mostrar el error.
+  - Las asignaciones Fila/Columna/Valor ya no compiten con Filtro. Una misma
+    variable puede ser dimensión y filtro; prueba de Columna + exclusión de un
+    valor pasa en `TableBuilder.test.tsx`.
+  - La pestaña Datos hidrata las variables desde columnas/tipos incluidos en
+    la metadata y elimina el IPC redundante `get_columns`; el contador se
+    muestra con la primera respuesta de datasets. Prueba confirma que no hay
+    segunda petición.
+  - Verificación: Vitest 11/11, `npm run typecheck`, `npm run build`,
+    `node --check public/splash.js`; smoke del sidecar del paquete nuevo
+    termina en `SMOKE_OK`.
+  - ZIP actualizado: `release/Polaris-Actualizado-0.1.0.zip` (319,7 MB).
+    Se usó un directorio nuevo porque `release/Polaris` estaba bloqueado por
+    una instancia en ejecución; no se cerró ni se interrumpió.
+
+- **Rendimiento, RAM y arranque portable** (2026-10-01):
+  - La admisión de datasets ahora usa la RAM física disponible y evita contar
+    dos veces los datasets residentes. Las reservas ligeras se ajustaron para
+    no bloquear conteos y lecturas cuando Windows reporta poca memoria libre.
+  - "Abrir archivo" reemplaza el dataset activo solo después de cargar el
+    nuevo; "Añadir" conserva el pool. Si falla el cierre del anterior, se
+    revierte el nuevo handle y se mantiene el dataset previo.
+  - Se instrumentó el conteo diferido con `queue_ms`, `execution_ms` y
+    `total_ms`; el IPC mide cada petición desde que llega al sidecar, incluida
+    su espera en cola.
+  - La splash es visible desde el inicio y la ventana principal revela en
+    fullscreen. Se eliminó el `warmup` inexistente que contaminaba los logs
+    con errores. Los hitos Rust se persisten en
+    `%TEMP%\polaris-startup-<pid>.log`.
+  - CSV real de 4,55 GB (22.303.560 filas): carga lazy inicial en 266 ms,
+    devuelve metadata provisional sin bloquear; primer `COUNT(*)` exacto en
+    15,29 s de ejecución y 15,97 s desde la petición de carga. El total se
+    persiste por fingerprint de origen para reutilizarlo en siguientes
+    aperturas.
+  - Arranque del ZIP portable medido: splash lista en 1,71 s, `setup` en
+    8,89 s, `frontend_ready` en 9,64 s, `engine_ready` y `READY` en 20,77 s.
+    Main visible en fullscreen 1280×800; sin `warmup`, `MEMORY_BUDGET_ERROR`
+    ni `memory_error` en los logs de la prueba final.
+  - Verificación: suites backend afectadas 56/56, Vitest 10/10,
+    `npm run typecheck`, `npm run build`, `cargo test --lib` 21/21 y
+    `scripts/smoke_sidecar.py` con `SMOKE_OK`. ZIP portable regenerado
+    (`release/Polaris-0.1.0.zip`, 319,6 MB).
+  - El build React pasó con el heap Node predeterminado; bundle JS 329 KB
+    (96,6 KB gzip). El mensaje de heap no se reprodujo en el build y los
+    listados/tablas del frontend siguen paginados.
+
 - **FASE 2 — Arranque coordinado por eventos + splash profesional** (2026-09-30):
   - **Gate FASE 1 (PASO 0)**: sidecar real PyInstaller `--onedir` reconstruido
     y desplegado en `src-tauri/target/debug/sidecar/`. `scripts/gate_fase1.py`

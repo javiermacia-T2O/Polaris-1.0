@@ -7,8 +7,8 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "MedicionAgil_Light" / "mmm_app"))
-sys.path.insert(0, str(ROOT / "MedicionAgil_Light" / "python"))
+sys.path.insert(0, str(ROOT / "src-tauri" / "sidecar-source" / "mmm_app"))
+sys.path.insert(0, str(ROOT / "src-tauri" / "sidecar-source" / "python"))
 
 import pandas as pd  # noqa: E402
 

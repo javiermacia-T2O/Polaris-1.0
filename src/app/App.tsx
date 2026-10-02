@@ -15,7 +15,7 @@ const tabs: Array<{ id: Screen; label: string }> = [
   { id: "analisis", label: "Análisis" },
   { id: "resultados", label: "Resultados" },
   { id: "graficos", label: "Gráficos" },
-  { id: "diagnostico", label: "Diagnóstico" },
+  { id: "diagnostico", label: "Diagnósticos" },
 ];
 
 export function App() {
@@ -36,7 +36,8 @@ function Shell() {
     <Sidebar />
     <div className="workspace">
       <header className="topbar">
-        <div className="breadcrumb">Polaris <span>/</span> {tabs.find((tab) => tab.id === screen)?.label}</div>
+        <div className="breadcrumb">Polaris <span>/</span> {tabs.find((tab) => tab.id === screen)?.label}
+          {screen === "analisis" && selected && <> <span>/</span> <strong>{selected.name}</strong></>}</div>
         <div className="topbar-right">
           {status && <span className={`status-pill ${status.kind}`} role="status">{status.message}</span>}
           <span className="runtime-badge">LOCAL · PYTHON</span>

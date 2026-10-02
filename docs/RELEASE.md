@@ -29,7 +29,6 @@ Polaris\
 ├── Polaris.exe            Host Tauri (ventana + IPC).
 ├── medicion-sidecar.exe   Motor Python congelado (PyInstaller onedir).
 ├── _internal\             Runtime de Python y dependencias del sidecar.
-├── Iniciar.cmd            Lanzador de doble clic.
 └── LEEME.txt              Instrucciones para el usuario final.
 ```
 
@@ -48,7 +47,8 @@ quedar en la misma carpeta. `_internal` debe quedar junto a
 2. **Host** — `npm run tauri build -- --no-bundle` (solo el ejecutable, sin
    instalador NSIS).
 3. **Ensamblado** — copia los binarios a `release\Polaris\` y genera
-   `Iniciar.cmd` y `LEEME.txt`.
+  `LEEME.txt`. El usuario inicia la app directamente con `Polaris.exe`, sin
+  pasar por un script de consola.
 4. **ZIP** — comprime la carpeta con `System.IO.Compression.ZipFile`.
 
 ## Verificación

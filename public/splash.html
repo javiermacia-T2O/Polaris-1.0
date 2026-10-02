@@ -17,24 +17,27 @@
       #splash {
         position: fixed; inset: 0;
         display: flex; flex-direction: column; align-items: center; justify-content: center;
-        gap: 24px;
+        gap: 12px; padding: 18px 16px;
         background: radial-gradient(120% 120% at 50% 0%, #16375f 0%, #0b1f3a 62%);
       }
-      .mark { width: 88px; height: 88px; opacity: .96; animation: float 3.4s ease-in-out infinite; }
+      .mark { width: 62px; height: 62px; flex: 0 0 auto; opacity: .96; animation: float 3.4s ease-in-out infinite; }
       .title {
         font-family: "Bodoni MT", "Bodoni 72", Didot, "Times New Roman", serif;
-        font-size: 38px; letter-spacing: 7px; text-transform: uppercase;
+        font-size: 34px; letter-spacing: 7px; text-transform: uppercase;
         color: #fff; margin: 0;
       }
-      .sub { margin: -12px 0 0; font-size: 10.5px; letter-spacing: 3.4px;
+      .sub { margin: -5px 0 0; font-size: 10px; letter-spacing: 3.2px;
         text-transform: uppercase; color: #7fa9d8; }
-      .bar { width: 232px; height: 3px; border-radius: 999px; background: #1d3f68; overflow: hidden; }
+      .bar { width: 200px; height: 3px; border-radius: 999px; background: #1d3f68; overflow: hidden; }
       .bar i { display: block; height: 100%; width: 34%; border-radius: 999px;
         background: linear-gradient(90deg, #5aa2e0, #8fc4f2);
         animation: slide 1.5s ease-in-out infinite; }
-      .msg { min-height: 16px; font-size: 11.5px; color: #9dc0e6; letter-spacing: .3px; }
-      .steps { display: flex; gap: 8px; margin-top: 2px; }
-      .steps span { width: 6px; height: 6px; border-radius: 50%; background: #24486f; transition: background .3s ease; }
+      .msg { min-height: 16px; margin: 0; font-size: 11.5px; color: #9dc0e6; letter-spacing: .3px; animation: message-in .35s ease; }
+      .msg.message-change { animation: message-in .35s ease; }
+      .steps { display: flex; gap: 9px; margin-top: 1px; }
+      .steps span { width: 7px; height: 7px; border-radius: 50%; background: #24486f; transition: background .3s ease; animation: pulse 1.05s ease-in-out infinite; }
+      .steps span:nth-child(2) { animation-delay: .18s; }
+      .steps span:nth-child(3) { animation-delay: .36s; }
       .steps span.done { background: #5aa2e0; }
       .steps span.active { background: #8fc4f2; box-shadow: 0 0 8px #8fc4f2; }
       #failure { display: none; flex-direction: column; align-items: center; gap: 14px; max-width: 340px; text-align: center; }
@@ -54,6 +57,16 @@
         padding: 8px 10px; max-width: 320px; word-break: break-word; text-align: left; }
       @keyframes slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(330%); } }
       @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+      @keyframes pulse { 0%, 100% { opacity: .38; transform: translateY(0) scale(.82); } 50% { opacity: 1; transform: translateY(-2px) scale(1); } }
+      @keyframes message-in { from { opacity: .45; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+      @media (max-height: 280px) {
+        #splash { gap: 8px; padding: 10px 14px; }
+        .mark { width: 48px; height: 48px; }
+        .title { font-size: 30px; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
+      }
     </style>
   </head>
   <body>
@@ -62,7 +75,7 @@
       <h1 class="title">Polaris</h1>
       <p class="sub">Marketing Science</p>
       <div class="bar"><i></i></div>
-      <p class="msg" id="msg">Iniciando Polaris…</p>
+      <p class="msg" id="msg" aria-live="polite">Iniciando Polaris…</p>
       <div class="steps" id="steps">
         <span data-step="engine"></span>
         <span data-step="frontend"></span>

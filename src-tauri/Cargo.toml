@@ -27,3 +27,11 @@ rand = "0.9.2"
 rfd = "0.15.4"
 thiserror = "2.0.17"
 base64 = "0.22.1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+	"Win32_Foundation",
+	"Win32_Security",
+	"Win32_System_JobObjects",
+	"Win32_System_Threading",
+] }

@@ -37,7 +37,10 @@
         "minWidth": 960,
         "minHeight": 640,
         "resizable": true,
+        "maximized": true,
         "fullscreen": false,
+        "decorations": true,
+        "center": true,
         "visible": false,
         "backgroundColor": "#0b1f3a"
       }
@@ -47,9 +50,8 @@
     "active": true,
     "targets": ["nsis"],
     "resources": {
-      "../MedicionAgil_Light/dist/medicion-sidecar/": "sidecar/"
+      "sidecar-source/dist/medicion-sidecar/": "sidecar/"
     },
     "windows": { "webviewInstallMode": { "type": "embedBootstrapper" } }
   }
 }
-

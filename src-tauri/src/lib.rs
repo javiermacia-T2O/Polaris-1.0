@@ -19,6 +19,7 @@ use thiserror::Error;
 /// the frontend; control operations always use a short timeout.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
+const STARTUP_HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long the splash may stay up before the coordinator reports a failure.
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
@@ -54,7 +55,17 @@ fn trace(stage: &str, detail: &str) {
         .get()
         .map(|start| start.elapsed().as_millis())
         .unwrap_or(0);
-    eprintln!("[startup] {stage} t={elapsed}ms {detail}");
+    let line = format!("[startup] {stage} t={elapsed}ms {detail}");
+    eprintln!("{line}");
+    let path = std::env::temp_dir()
+        .join(format!("polaris-startup-{}.log", std::process::id()));
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(file, "{line}");
+    }
 }
 
 /// Receives progress notifications from the sidecar reader thread.
@@ -117,6 +128,49 @@ struct SidecarProcess {
     pending: Arc<Mutex<HashMap<String, mpsc::Sender<Value>>>>,
     token: String,
     sequence: AtomicU64,
+    _job: Option<SidecarJob>,
+}
+
+#[cfg(windows)]
+type SidecarJob = std::os::windows::io::OwnedHandle;
+
+#[cfg(not(windows))]
+type SidecarJob = ();
+
+#[cfg(windows)]
+fn attach_sidecar_job(child: &Child) -> Option<SidecarJob> {
+    use std::{mem, os::windows::io::{AsRawHandle, FromRawHandle}};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JobObjectExtendedLimitInformation,
+    };
+
+    let raw_job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+    if raw_job.is_null() {
+        return None;
+    }
+    let job = unsafe { SidecarJob::from_raw_handle(raw_job) };
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { mem::zeroed() };
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let configured = unsafe {
+        SetInformationJobObject(
+            job.as_raw_handle(),
+            JobObjectExtendedLimitInformation,
+            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if configured == 0 {
+        return None;
+    }
+    let assigned = unsafe { AssignProcessToJobObject(job.as_raw_handle(), child.as_raw_handle()) };
+    (assigned != 0).then_some(job)
+}
+
+#[cfg(not(windows))]
+fn attach_sidecar_job(_child: &Child) -> Option<SidecarJob> {
+    None
 }
 
 impl SidecarProcess {
@@ -134,6 +188,7 @@ impl SidecarProcess {
             .creation_flags(0x08000000)
             .spawn()
             .map_err(|error| SidecarProcessError::Start(error.to_string()))?;
+        let job = attach_sidecar_job(&child);
         let stdin = child
             .stdin
             .take()
@@ -169,6 +224,7 @@ impl SidecarProcess {
             pending,
             token,
             sequence: AtomicU64::new(0),
+            _job: job,
         })
     }
 
@@ -442,6 +498,7 @@ impl StartupState {
 /// main window has been revealed, later readiness signals are ignored.
 struct StartupCoordinator {
     state: Mutex<StartupState>,
+    failure: Mutex<Option<String>>,
     engine_ready: AtomicBool,
     frontend_ready: AtomicBool,
     revealed: AtomicBool,
@@ -452,6 +509,7 @@ impl StartupCoordinator {
     fn new() -> Self {
         Self {
             state: Mutex::new(StartupState::Starting),
+            failure: Mutex::new(None),
             engine_ready: AtomicBool::new(false),
             frontend_ready: AtomicBool::new(false),
             revealed: AtomicBool::new(false),
@@ -470,6 +528,23 @@ impl StartupCoordinator {
 
     fn state(&self) -> StartupState {
         self.state.lock().map(|guard| *guard).unwrap_or(StartupState::Failed)
+    }
+
+    fn record_failure(&self, message: &str) {
+        if let Ok(mut failure) = self.failure.lock() {
+            *failure = Some(message.to_string());
+        }
+        self.set_state(StartupState::Failed);
+    }
+
+    fn failure_message(&self) -> Option<String> {
+        self.failure.lock().ok().and_then(|failure| failure.clone())
+    }
+
+    fn clear_failure(&self) {
+        if let Ok(mut failure) = self.failure.lock() {
+            *failure = None;
+        }
     }
 
     fn elapsed_ms(&self) -> u64 {
@@ -507,10 +582,7 @@ impl StartupCoordinator {
         }
         self.set_state(StartupState::Ready);
         trace("ready", "");
-        // Execute the reveal plan in order: show and focus the main window,
-        // then close the splash, then announce readiness. The splash is closed
-        // only after the main window is visible, so the user never sees an
-        // empty desktop between the two.
+        // Show and focus the normal desktop window before closing the splash.
         for action in reveal_plan() {
             match action {
                 RevealAction::ShowMain => {
@@ -547,8 +619,11 @@ impl StartupCoordinator {
     }
 
     fn fail(&self, app: &AppHandle, message: &str) {
-        self.set_state(StartupState::Failed);
+        self.record_failure(message);
         trace("failed", message);
+        if let Some(splash) = app.get_webview_window(SPLASH_WINDOW) {
+            let _ = splash.show();
+        }
         let _ = app.emit(
             STARTUP_FAILED_EVENT,
             json!({ "message": message, "elapsed_ms": self.elapsed_ms() }),
@@ -571,23 +646,11 @@ fn prewarm_engine(manager: Arc<SidecarManager>, coordinator: Arc<StartupCoordina
         "health",
         json!({}),
         "control",
-        CONTROL_TIMEOUT,
+        STARTUP_HEALTH_TIMEOUT,
     );
     match result {
         Ok(response) if response.get("ok").and_then(Value::as_bool).unwrap_or(false) => {
             coordinator.mark_engine_ready(&app);
-            // The engine answered `health` without loading the scientific
-            // stack (pandas/DuckDB). Ask it to warm up in the background so
-            // the first real data operation does not pay the import cost
-            // while the user waits. Fire-and-forget: a failure here is
-            // harmless, the real operation will report it.
-            let _ = manager.request(
-                None,
-                "warmup",
-                json!({}),
-                "background",
-                CONTROL_TIMEOUT,
-            );
         }
         Ok(response) => {
             let message = response
@@ -671,15 +734,29 @@ fn cancel_request(state: State<'_, Arc<SidecarManager>>, target_id: String) -> R
 /// Called by the splash window once it has painted, so the coordinator knows
 /// the first real milestone happened.
 #[tauri::command]
-fn splash_ready(state: State<'_, Arc<StartupCoordinator>>) {
+fn splash_ready(state: State<'_, Arc<StartupCoordinator>>, app: AppHandle) {
     trace("splash_ready", "");
-    state.set_state(StartupState::SplashReady);
+    if state.state() != StartupState::Failed {
+        state.set_state(StartupState::SplashReady);
+    }
+    if !state.revealed.load(Ordering::SeqCst) {
+        if let Some(splash) = app.get_webview_window(SPLASH_WINDOW) {
+            let _ = splash.show();
+        }
+    }
+    if let Some(message) = state.failure_message() {
+        let _ = app.emit(
+            STARTUP_FAILED_EVENT,
+            json!({ "message": message, "elapsed_ms": state.elapsed_ms() }),
+        );
+    }
 }
 
 /// Called by React when the shell is mounted and the essential state is
 /// loaded. It never waits for analyses, diagnostics or caches.
 #[tauri::command]
 fn frontend_ready(state: State<'_, Arc<StartupCoordinator>>, app: AppHandle) {
+    trace("frontend_ready_command", "received");
     state.mark_frontend_ready(&app);
 }
 
@@ -692,6 +769,7 @@ fn retry_startup(
     app: AppHandle,
 ) {
     manager.stop();
+    coordinator.clear_failure();
     coordinator.engine_ready.store(false, Ordering::SeqCst);
     coordinator.frontend_ready.store(false, Ordering::SeqCst);
     coordinator.revealed.store(false, Ordering::SeqCst);
@@ -726,6 +804,13 @@ fn select_export_path(file_name: String, format: String) -> Option<String> {
         .add_filter(label, &[extension])
         .set_file_name(file_name)
         .save_file()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn select_output_directory() -> Option<String> {
+    rfd::FileDialog::new()
+        .pick_folder()
         .map(|path| path.to_string_lossy().into_owned())
 }
 
@@ -802,8 +887,8 @@ fn sidecar_command(resource_dir: &Path, token: &str) -> Result<Command, SidecarP
     let python = workspace.join(".venv").join("Scripts").join("python.exe");
     if python.is_file() {
         let mut command = Command::new(python);
-        let python_path = workspace.join("MedicionAgil_Light").join("python");
-        let legacy_path = workspace.join("MedicionAgil_Light").join("mmm_app");
+        let python_path = workspace.join("src-tauri").join("sidecar-source").join("python");
+        let app_path = workspace.join("src-tauri").join("sidecar-source").join("mmm_app");
         command
             .arg("-m")
             .arg("medicion_core.sidecar")
@@ -811,7 +896,7 @@ fn sidecar_command(resource_dir: &Path, token: &str) -> Result<Command, SidecarP
             .arg(token)
             .env(
                 "PYTHONPATH",
-                format!("{};{}", python_path.display(), legacy_path.display()),
+                format!("{};{}", python_path.display(), app_path.display()),
             );
         return Ok(command);
     }
@@ -821,6 +906,20 @@ fn sidecar_command(resource_dir: &Path, token: &str) -> Result<Command, SidecarP
 pub fn run() {
     PROCESS_START.get_or_init(Instant::now);
     tauri::Builder::default()
+        .on_page_load(|webview, payload| {
+            let label = webview.label();
+            let event = match payload.event() {
+                tauri::webview::PageLoadEvent::Started => "started",
+                tauri::webview::PageLoadEvent::Finished => "finished",
+            };
+            trace("page_load", &format!("window={label} event={event}"));
+            if webview.label() == SPLASH_WINDOW
+                && payload.event() == tauri::webview::PageLoadEvent::Finished
+            {
+                trace("splash_page_loaded", "");
+                let _ = webview.window().show();
+            }
+        })
         .setup(|app| {
             trace("setup", "");
             let resource_dir = app
@@ -845,13 +944,9 @@ pub fn run() {
             if let Some(main) = app.get_webview_window(MAIN_WINDOW) {
                 let _ = main.hide();
             }
-            if let Some(splash) = app.get_webview_window(SPLASH_WINDOW) {
-                let _ = splash.show();
-            }
-
             // Task A: prewarm the Python engine. Task B is the webview itself,
-            // which Tauri already loads in parallel. They meet in the
-            // coordinator, which reveals the main window once both are ready.
+            // which Tauri already loads in parallel. The splash remains hidden
+            // until its own document reports that it is ready to paint.
             {
                 let manager = Arc::clone(&manager);
                 let coordinator = Arc::clone(&coordinator);
@@ -870,6 +965,7 @@ pub fn run() {
             quit_app,
             select_dataset,
             select_export_path,
+            select_output_directory,
             save_chart
         ])
         .build(tauri::generate_context!())
@@ -1030,6 +1126,21 @@ mod tests {
     }
 
     #[test]
+    fn startup_failure_is_retained_until_the_splash_can_display_it() {
+        let coordinator = StartupCoordinator::new();
+        coordinator.record_failure("No se pudo iniciar el sidecar");
+
+        assert_eq!(coordinator.state(), StartupState::Failed);
+        assert_eq!(
+            coordinator.failure_message().as_deref(),
+            Some("No se pudo iniciar el sidecar")
+        );
+
+        coordinator.clear_failure();
+        assert_eq!(coordinator.failure_message(), None);
+    }
+
+    #[test]
     fn retry_resets_the_reveal_guard_so_a_second_attempt_can_succeed() {
         // Case 7/8: a retry clears the flags; the second attempt reveals once
         // and only once, so no duplicate window is ever shown.
@@ -1129,13 +1240,13 @@ mod tests {
 
     #[test]
     fn the_splash_is_closed_only_after_the_main_window_is_shown() {
-        // Case 12: the reveal plan shows and focuses the main window before
-        // closing the splash, so there is never an empty desktop between them.
+        // Case 12: the reveal plan shows the main window before closing the splash.
         let plan = reveal_plan();
         let show = plan.iter().position(|a| *a == RevealAction::ShowMain).unwrap();
+        let focus = plan.iter().position(|a| *a == RevealAction::FocusMain).unwrap();
         let close = plan.iter().position(|a| *a == RevealAction::CloseSplash).unwrap();
-        assert!(show < close, "main must be shown before the splash closes");
-        // The ready event is emitted last, once the window is already visible.
+        assert!(show < focus, "main must be shown before it is focused");
+        assert!(focus < close, "main must be focused before the splash closes");
         let emit = plan.iter().position(|a| *a == RevealAction::EmitReady).unwrap();
         assert!(close < emit, "ready is emitted after the splash closes");
     }

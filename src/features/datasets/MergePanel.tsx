@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../../shared/api";
 import { useUiStore } from "../../app/store";
 import type { DatasetMetadata } from "../../shared/types";
@@ -7,14 +7,13 @@ import { CheckboxList } from "../../shared/CheckboxList";
 
 export function MergePanel({ datasets }: { datasets: DatasetMetadata[] }) {
   const client = useQueryClient();
-  const { setActiveDataset, mergeOpen, setMergeOpen } = useUiStore();
+  const { setActiveDataset, setStatus, mergeOpen, setMergeOpen } = useUiStore();
   const [selected, setSelected] = useState<string[]>([]);
   const [operation, setOperation] = useState<"concat" | "merge">("concat");
   const [mode, setMode] = useState<"all" | "common">("all");
   const [how, setHow] = useState<"inner" | "outer">("inner");
   const [keys, setKeys] = useState<string[]>([]);
   const [name, setName] = useState("");
-  const [notice, setNotice] = useState("");
   const open = mergeOpen;
   const setOpen = setMergeOpen;
 
@@ -31,10 +30,14 @@ export function MergePanel({ datasets }: { datasets: DatasetMetadata[] }) {
       name, operation, mode, keys, how,
     }),
     onSuccess: async (metadata) => {
-      setNotice(`'${metadata.name}' creado con ${metadata.rows.toLocaleString("es-ES")} filas.`);
+      setStatus({
+        message: `'${metadata.name}' creado con ${metadata.rows.toLocaleString("es-ES")} filas.`,
+        kind: "success",
+      });
       setSelected([]);
       setKeys([]);
       setName("");
+      setOpen(false);
       setActiveDataset(metadata.dataset_id);
       await client.invalidateQueries({ queryKey: ["datasets"] });
     },
@@ -43,20 +46,29 @@ export function MergePanel({ datasets }: { datasets: DatasetMetadata[] }) {
   const toggle = (id: string) => setSelected((current) =>
     current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
 
-  if (datasets.length < 2) return <article className="panel merge-panel">
-    <div className="panel-head"><div><h2>Unir datasets</h2>
-      <p>Combina dos o más datasets del pool en uno nuevo.</p></div></div>
-    <div className="empty-inline">Necesitas al menos dos datasets cargados para poder unirlos.</div>
-  </article>;
+  useEffect(() => {
+    if (!open) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [open, setOpen]);
 
-  return <article className="panel merge-panel">
-    <div className="panel-head"><div><h2>Unir datasets</h2>
-      <p>Combina dos o más datasets del pool en uno nuevo.</p></div>
-      <div className="panel-actions">
-        <button className="quiet-button" onClick={() => setOpen(!open)}>
-          {open ? "Ocultar" : "Mostrar"}</button>
-      </div></div>
-    {open && <div className="merge-grid">
+  if (!open) return null;
+
+  return <div className="filter-modal-backdrop" onMouseDown={(event) => {
+    if (event.target === event.currentTarget) setOpen(false);
+  }}>
+    <section className="filter-modal merge-modal" role="dialog" aria-modal="true" aria-labelledby="merge-modal-title">
+      <header className="filter-modal-head">
+        <div><h2 id="merge-modal-title">Unir datasets</h2>
+          <p>Combina dos o más datasets del pool en uno nuevo.</p></div>
+        <button type="button" className="quiet-button" aria-label="Cerrar unión" onClick={() => setOpen(false)}>×</button>
+      </header>
+      {datasets.length < 2
+        ? <div className="filter-modal-body"><div className="empty-inline">Necesitas al menos dos datasets cargados para poder unirlos.</div></div>
+        : <div className="filter-modal-body merge-modal-body"><div className="merge-grid">
       <div className="merge-select">
         <span className="merge-label">Datasets a unir</span>
         <CheckboxList options={datasets.map((item) => ({ value: item.dataset_id,
@@ -91,8 +103,9 @@ export function MergePanel({ datasets }: { datasets: DatasetMetadata[] }) {
             (operation === "merge" && keys.length === 0)}>
           {merge.isPending ? "Uniendo…" : "Unir datasets"}</button>
       </div>
-    </div>}
-    {notice && <div className="notice-bar" role="status">{notice}</div>}
-    {merge.error && <div className="error" role="alert">No se pudieron unir los datasets: {merge.error.message}</div>}
-  </article>;
+        </div>
+        {merge.error && <div className="error" role="alert">No se pudieron unir los datasets: {merge.error.message}</div>}
+      </div>}
+    </section>
+  </div>;
 }

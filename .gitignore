@@ -19,14 +19,12 @@ output/
 logs/
 *.log
 release/
-MedicionAgil_Light/
 
 # Frontend / Tauri
 node_modules/
 target/
 src-tauri/target/
 coverage/
-MedicionAgil_Light/medicion-sidecar.spec
 
 # Editors and operating system
 .idea/

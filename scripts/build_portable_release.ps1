@@ -12,7 +12,6 @@
         Polaris.exe            Host Tauri (ventana + IPC).
         medicion-sidecar.exe   Motor Python congelado (PyInstaller onedir).
         _internal\             Runtime de Python y dependencias del sidecar.
-        Iniciar.cmd            Lanzador de doble clic.
         LEEME.txt              Instrucciones para el usuario final.
 
     El host resuelve el sidecar como hermano del ejecutable, por lo que ambos
@@ -27,7 +26,7 @@
     `src-tauri\tauri.conf.json`.
 
 .PARAMETER SkipSidecar
-    Reutiliza el sidecar ya construido en `MedicionAgil_Light\dist`.
+    Reutiliza el sidecar ya construido en `src-tauri\sidecar-source\dist`.
 
 .PARAMETER SkipHost
     Reutiliza el ejecutable Tauri ya construido en `src-tauri\target\release`.
@@ -47,15 +46,21 @@ $ErrorActionPreference = 'Stop'
 
 $workspace = Split-Path -Parent $PSScriptRoot
 $python = Join-Path $workspace '.venv\Scripts\python.exe'
-$app = Join-Path $workspace 'MedicionAgil_Light\mmm_app'
-$core = Join-Path $workspace 'MedicionAgil_Light\python'
+$sidecarRoot = Join-Path $workspace 'src-tauri\sidecar-source'
+$app = Join-Path $sidecarRoot 'mmm_app'
+$core = Join-Path $sidecarRoot 'python'
 $entry = Join-Path $core 'medicion_sidecar.py'
-$sidecarDist = Join-Path $workspace 'MedicionAgil_Light\dist'
-$sidecarWork = Join-Path $workspace 'MedicionAgil_Light\build\sidecar-release'
-$sidecarSpec = Join-Path $workspace 'MedicionAgil_Light\build\sidecar-release-spec'
+$sidecarDist = Join-Path $sidecarRoot 'dist'
+$sidecarWork = Join-Path $sidecarRoot 'build\sidecar-release'
+$sidecarSpec = Join-Path $sidecarRoot 'build\sidecar-release-spec'
 $hostExe = Join-Path $workspace 'src-tauri\target\release\medicion-agil.exe'
 $releaseRoot = Join-Path $workspace 'release'
 $portable = Join-Path $releaseRoot $PackageName
+$releaseRootFull = [System.IO.Path]::GetFullPath($releaseRoot).TrimEnd('\')
+$portableFull = [System.IO.Path]::GetFullPath($portable)
+if (-not $portableFull.StartsWith($releaseRootFull + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw 'La carpeta portable debe permanecer dentro de release.'
+}
 
 if (-not $Version) {
     $conf = Get-Content -LiteralPath (Join-Path $workspace 'src-tauri\tauri.conf.json') -Raw |
@@ -107,6 +112,7 @@ if (-not $SkipSidecar) {
         '--hidden-import', 'services.data_service',
         '--hidden-import', 'services.merge_service',
         '--hidden-import', 'services.table_service',
+        '--hidden-import', 'ui.figure_utils',
         '--hidden-import', 'core.plugin_loader',
         '--hidden-import', 'core.engine',
         '--hidden-import', 'core.loader',
@@ -173,13 +179,6 @@ Copy-Item -LiteralPath $hostExe -Destination (Join-Path $portable "$PackageName.
 Copy-Item -LiteralPath $sidecarExe -Destination $portable
 Copy-Item -LiteralPath $sidecarInternal -Destination $portable -Recurse
 
-$launcher = @"
-@echo off
-setlocal
-start "" "%~dp0$PackageName.exe"
-"@
-Set-Content -LiteralPath (Join-Path $portable 'Iniciar.cmd') -Value $launcher -Encoding ASCII
-
 $readme = @"
 $PackageName $Version
 =====================
@@ -191,7 +190,7 @@ CÓMO EJECUTAR
 -------------
 1. Extrae TODO el contenido de este ZIP en una carpeta (por ejemplo, en el
    Escritorio). No ejecutes la aplicación desde dentro del ZIP.
-2. Haz doble clic en "Iniciar.cmd" o directamente en "$PackageName.exe".
+2. Haz doble clic en "$PackageName.exe".
 
 No hace falta instalar nada: ni Python, ni dependencias, ni servicios, ni
 modificar el PATH. Todo lo necesario va incluido en esta carpeta.
@@ -202,8 +201,8 @@ IMPORTANTE
   "_internal". Si se separan, la aplicación no arrancará.
 - La primera apertura puede tardar unos segundos mientras Windows comprueba
   los archivos extraídos. No se instala nada al iniciar.
-- Los archivos que generes se guardan en la carpeta "output" que se crea junto
-  al ejecutable.
+- Al guardar resultados, elige una carpeta y escribe un nombre para el análisis.
+  Polaris creará carpetas por fecha, nombre, tipo de análisis y resultado.
 - Si Windows SmartScreen muestra un aviso la primera vez, elige "Más
   información" y "Ejecutar de todas formas".
 "@

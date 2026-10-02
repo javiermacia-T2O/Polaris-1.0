@@ -10,10 +10,8 @@ export default defineConfig({
     watch: {
       ignored: [
         "**/src-tauri/target/**",
-        "**/MedicionAgil_Light/build/**",
-        "**/MedicionAgil_Light/dist/**",
-        "**/MedicionAgil_Light/mmm_app/output/**",
-        "**/MedicionAgil_Light/mmm_app/logs/**",
+        "**/src-tauri/sidecar-source/build/**",
+        "**/src-tauri/sidecar-source/dist/**",
         // Datasets and exports are user data, not source. Watching them
         // crashes the dev server with EBUSY when a file is locked by the
         // scientific engine (e.g. an open CSV/Parquet).

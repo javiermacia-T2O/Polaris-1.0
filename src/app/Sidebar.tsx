@@ -5,6 +5,7 @@ import { useUiStore } from "./store";
 import { useAnalysis } from "./AnalysisContext";
 import { Logo } from "./Logo";
 import { Loading } from "../shared/Loading";
+import type { DatasetMetadata } from "../shared/types";
 
 const GRANULARITY_LABELS: Record<string, string> = {
   D: "Diario", W: "Semanal", M: "Mensual", Q: "Trimestral", Y: "Anual", Original: "Original",
@@ -13,7 +14,7 @@ const GRANULARITY_LABELS: Record<string, string> = {
 export function Sidebar() {
   const client = useQueryClient();
   const { activeDatasetId, setActiveDataset, setStatus } = useUiStore();
-  const { analyses, selected, selectAnalysis, run, runPending, jobId, job } = useAnalysis();
+  const { analyses, selected, selectAnalysis, parameters, run, runPending, jobId, job } = useAnalysis();
   const datasets = useQuery({ queryKey: ["datasets"], queryFn: api.listDatasets });
   const active = datasets.data?.find((item) => item.dataset_id === activeDatasetId) ?? datasets.data?.[0];
 
@@ -55,18 +56,44 @@ export function Sidebar() {
   }, [range.data]);
 
   const load = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (replaceActive: boolean) => {
       const path = await api.selectDataset();
-      return path ? api.loadDataset(path) : null;
+      if (!path) return null;
+      const replacedId = replaceActive ? active?.dataset_id : undefined;
+      if (replacedId) {
+        const metadata = await api.loadDataset(path);
+        try {
+          await api.closeDataset(replacedId);
+        } catch (error) {
+          await api.closeDataset(metadata.dataset_id).catch(() => undefined);
+          throw error;
+        }
+        return { metadata, replacedId };
+      }
+      return { metadata: await api.loadDataset(path), replacedId };
     },
     onMutate: () => setStatus({ message: "Abriendo archivo…", kind: "info" }),
-    onSuccess: async (data) => {
-      if (!data) { setStatus(null); return; }
-      setActiveDataset(data.dataset_id);
-      setStatus({ message: `'${data.name}' cargado · ${data.rows.toLocaleString("es-ES")} filas`, kind: "success" });
-      await client.invalidateQueries({ queryKey: ["datasets"] });
+    onSuccess: async (result) => {
+      if (!result) { setStatus(null); return; }
+      const { metadata, replacedId } = result;
+      client.setQueryData<DatasetMetadata[]>(["datasets"], (current) => [
+        metadata,
+        ...(current ?? []).filter((item) => item.dataset_id !== metadata.dataset_id
+          && item.dataset_id !== replacedId),
+      ]);
+      setActiveDataset(metadata.dataset_id);
+      const rows = metadata.rows_approximate
+        ? metadata.rows > 0
+          ? `~${metadata.rows.toLocaleString("es-ES")} filas · exacto en curso`
+          : "contando filas…"
+        : `${metadata.rows.toLocaleString("es-ES")} filas`;
+      setStatus({ message: `'${metadata.name}' cargado · ${rows}`, kind: "success" });
+      void client.invalidateQueries({ queryKey: ["datasets"] });
     },
-    onError: (error: Error) => setStatus({ message: `No se pudo abrir el archivo: ${error.message}`, kind: "error" }),
+    onError: (error: Error) => {
+      void client.invalidateQueries({ queryKey: ["datasets"] });
+      setStatus({ message: `No se pudo abrir el archivo: ${error.message}`, kind: "error" });
+    },
   });
 
   const close = useMutation({
@@ -103,18 +130,23 @@ export function Sidebar() {
   });
 
   const running = Boolean(jobId && job && ["QUEUED", "RUNNING"].includes(job.state));
+  const regressionEvents = Array.isArray(parameters.events) ? parameters.events : [];
+  const regressionInputs = Array.isArray(parameters.input_cols) ? parameters.input_cols : [];
+  const regressionReady = selected?.id !== "regression" || Boolean(parameters.target_col && parameters.date_col
+    && (regressionInputs.length || regressionEvents.length)
+    && (!String(parameters.regression_type ?? "").toLocaleLowerCase("es").startsWith("evento / its")
+      || regressionEvents.length === 1));
 
   return <aside className="sidebar">
     <div className="brand"><Logo size={32} /><div><span className="brand-title">Polaris</span><small>Marketing Science</small></div></div>
 
     <div className="sidebar-scroll">
       <p className="section-title">01 · Archivo</p>
-      <p className="file-label">{active ? active.name : "(ninguno)"}</p>
-      <button className="primary block" onClick={() => load.mutate()} disabled={load.isPending}>
+      <button className="primary block" onClick={() => load.mutate(true)} disabled={load.isPending}>
         {load.isPending ? "Abriendo…" : "Abrir archivo"}
       </button>
       <div className="row-2">
-        <button className="quiet-button" onClick={() => load.mutate()} disabled={load.isPending}>Añadir</button>
+        <button className="quiet-button" onClick={() => load.mutate(false)} disabled={load.isPending}>Añadir</button>
         <button className="quiet-button" onClick={() => {
           const store = useUiStore.getState();
           store.setScreen("datos");
@@ -152,19 +184,18 @@ export function Sidebar() {
         <button className="quiet-button" onClick={() => resetRange.mutate()} disabled={!active || resetRange.isPending}>Reset</button>
       </div>
 
-      <p className="section-title">03 · Análisis</p>
-      <p className="analysis-cat">{selected?.category ?? "—"}</p>
+      <div className="analysis-section-heading">
+        <p className="section-title">03 · Análisis</p>
+        {selected && <span className="analysis-cat" title={selected.name}>
+          {selected.name.split("(")[0]?.trim() ?? selected.name}</span>}
+      </div>
       <select className="analysis-select" value={selected?.id ?? ""} onChange={(event) => selectAnalysis(event.target.value)}>
         <option value="">Seleccionar análisis…</option>
         {analyses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
       </select>
       <p className="analysis-desc">{selected?.description ?? "Elige un método para ver su descripción."}</p>
-      <div className="format-hint">
-        <span className="format-hint-title">Formato tabla:</span>
-        <span className="format-hint-body">{selected?.table_format?.summary ?? "—"}</span>
-      </div>
       <button className="primary block" onClick={run}
-        disabled={!selected || !active || runPending || running}>
+        disabled={!selected || !active || runPending || running || !regressionReady}>
         {runPending ? "Enviando…" : running ? "Ejecutando…" : "Ejecutar análisis"}
       </button>
       {analyses.length === 0 && <Loading label="Leyendo catálogo…" inline />}

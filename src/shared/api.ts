@@ -84,6 +84,14 @@ export const api = {
   selectDataset: () => invoke<string | null>("select_dataset"),
   selectExportPath: (fileName: string, format: "csv" | "parquet") =>
     invoke<string | null>("select_export_path", { fileName, format }),
+  selectOutputDirectory: () => invoke<string | null>("select_output_directory"),
+  exportAnalysisBundle: (resultId: string, destination: string, runName: string,
+    kind: "metrics" | "table" | "all_results" | "chart" | "all_charts",
+    name = "", existingRoot = "") =>
+    request<{ root_dir: string; saved: string[] }>("export_analysis_bundle", {
+      result_id: resultId, destination, run_name: runName, kind, name,
+      existing_root: existingRoot,
+    }, { timeoutMs: 600000 }),
   saveChart: (fileName: string, dataBase64: string) =>
     invoke<string | null>("save_chart", { fileName, dataBase64 }),
   async loadDataset(path: string): Promise<DatasetMetadata> {
@@ -103,9 +111,10 @@ export const api = {
       dataset_id: datasetId, column,
     }));
   },
-  columnValues: (datasetId: string, column: string, limit = 500) =>
-    request<{ column: string; values: string[]; truncated: boolean }>(
-      "get_column_values", { dataset_id: datasetId, column, limit }),
+  columnValues: (datasetId: string, column: string, limit = 500,
+    options: RequestOptions = {}) =>
+    request<{ column: string; values: Array<string | null>; truncated: boolean }>(
+      "get_column_values", { dataset_id: datasetId, column, limit }, options),
   async preview(datasetId: string, offset: number, limit = 100,
     options: RequestOptions = {}): Promise<TablePage> {
     return tablePageSchema.parse(await request("get_table_preview", {
@@ -118,6 +127,11 @@ export const api = {
   async analysisManifest(analysisId: string, datasetId: string): Promise<AnalysisManifest> {
     return analysisManifestSchema.parse(await request("get_analysis_manifest", {
       analysis_id: analysisId, dataset_id: datasetId,
+    }));
+  },
+  async regressionPreview(datasetId: string, dateColumn: string, columns: string[], limit = 1200) {
+    return tablePageSchema.parse(await request("regression_preview", {
+      dataset_id: datasetId, date_column: dateColumn, columns, limit,
     }));
   },
   async applyFilters(datasetId: string, filters: Array<{ column: string; values: unknown[] }>) {

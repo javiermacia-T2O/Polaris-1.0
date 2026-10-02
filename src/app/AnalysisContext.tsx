@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../shared/api";
@@ -41,6 +41,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
   const setStatus = useUiStore((state) => state.setStatus);
 
   const [parameters, setParameters] = useState<Record<string, unknown>>({});
+  const initializedManifest = useRef("");
   const [jobId, setJobId] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
 
@@ -58,13 +59,21 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
   const fields = useMemo(() => schemaFields(manifest.data?.parameter_schema), [manifest.data]);
 
   useEffect(() => {
+    if (!manifest.data || !selectedAnalysisId || !datasetId) return;
+    const key = `${selectedAnalysisId}\u001f${datasetId}`;
+    if (initializedManifest.current === key) return;
+    initializedManifest.current = key;
     const defaults = Object.fromEntries(fields.filter((field) => field.key).map((field) => [
       field.key!, field.default ?? (field.type === "multi" ? [] : field.type === "checkbox" ? false : ""),
     ]));
     setParameters(defaults);
     setJobId(null);
     setModalOpen(false);
-  }, [selectedAnalysisId, datasetId, manifest.data]);
+  }, [selectedAnalysisId, datasetId, manifest.data, fields]);
+
+  const setParameter = useCallback((key: string, value: unknown) => {
+    setParameters((current) => ({ ...current, [key]: value }));
+  }, []);
 
   const runMutation = useMutation({
     mutationFn: () => api.runAnalysis(selectedAnalysisId!, datasetId!, parameters),
@@ -134,7 +143,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     manifestLoading: manifest.isLoading,
     manifestError: manifest.error as Error | null,
     parameters,
-    setParameter: (key, value) => setParameters((current) => ({ ...current, [key]: value })),
+    setParameter,
     run,
     runPending: runMutation.isPending,
     runError: runMutation.error as Error | null,

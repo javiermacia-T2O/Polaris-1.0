@@ -4,6 +4,16 @@ export type Screen = "datos" | "analisis" | "resultados" | "graficos" | "diagnos
 
 export type StatusKind = "info" | "success" | "warning" | "error";
 export type Status = { message: string; kind: StatusKind } | null;
+export type RegressionOverview = {
+  datasetId: string;
+  active: number;
+  total: number;
+  correlation: number | null;
+  vif: number | null;
+  events: number;
+  method: string;
+};
+export type ExportSession = { destination: string; runName: string; rootDir: string };
 
 type UiState = {
   screen: Screen;
@@ -13,6 +23,8 @@ type UiState = {
   status: Status;
   columnTypes: Record<string, string>;
   mergeOpen: boolean;
+  regressionOverview: RegressionOverview | null;
+  exportSessions: Record<string, ExportSession>;
   setScreen: (screen: Screen) => void;
   setActiveDataset: (datasetId: string | null) => void;
   setActiveResult: (resultId: string | null) => void;
@@ -21,6 +33,8 @@ type UiState = {
   setColumnTypes: (types: Record<string, string>) => void;
   setColumnType: (column: string, type: string) => void;
   setMergeOpen: (open: boolean) => void;
+  setRegressionOverview: (overview: RegressionOverview | null) => void;
+  setExportSession: (resultId: string, session: ExportSession) => void;
 };
 
 export const useUiStore = create<UiState>((set) => ({
@@ -31,6 +45,8 @@ export const useUiStore = create<UiState>((set) => ({
   status: null,
   columnTypes: {},
   mergeOpen: false,
+  regressionOverview: null,
+  exportSessions: {},
   setScreen: (screen) => set({ screen }),
   setActiveDataset: (activeDatasetId) => set({ activeDatasetId }),
   setActiveResult: (activeResultId) => set({ activeResultId }),
@@ -41,4 +57,8 @@ export const useUiStore = create<UiState>((set) => ({
     columnTypes: { ...state.columnTypes, [column]: type },
   })),
   setMergeOpen: (mergeOpen) => set({ mergeOpen }),
+  setRegressionOverview: (regressionOverview) => set({ regressionOverview }),
+  setExportSession: (resultId, session) => set((state) => ({
+    exportSessions: { ...state.exportSessions, [resultId]: session },
+  })),
 }));
